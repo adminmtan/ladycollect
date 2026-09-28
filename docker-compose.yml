@@ -1,0 +1,31 @@
+services:
+  app:
+    # 镜像：从 Docker Hub 拉取
+    # 升级：改 IMAGE_TAG 环境变量后 docker compose pull && up -d
+    image: ${IMAGE:-mtan/crawler-panel}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    container_name: crawler-panel
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - CLOAKBROWSER_LICENSE_KEY=${CLOAKBROWSER_LICENSE_KEY:-}
+      - CLOAKBROWSER_AUTO_UPDATE=true
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8080
+      - DATABASE_URL=sqlite:////app/data/app.db
+      - DEFAULT_USER_AGENT=${DEFAULT_USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36}
+      - PROXY_URL=${PROXY_URL:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - JWT_SECRET=${JWT_SECRET:-}
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-1440}
+      - AUTH_DISABLED=${AUTH_DISABLED:-false}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # NAS 上 Watchtower 自动升级用（可选）：
+    # label: com.centurylinklabs.watchtower.enable=true

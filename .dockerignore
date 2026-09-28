@@ -1,0 +1,36 @@
+# 镜像构建时 COPY 上下文排除；不影响 git
+
+# 运行时/数据/环境
+data/
+.env
+.env.*
+!.env.example
+*.log
+
+# 前端不需要
+frontend/dist/
+frontend/node_modules/
+frontend/.vite/
+
+# Python
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 编辑器 / 系统
+.cursor/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# CI/构建标记
+.github/
+.git/
+.gitignore
+.dockerignore
+*.md
