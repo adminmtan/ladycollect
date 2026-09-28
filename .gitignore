@@ -15,19 +15,27 @@ env/
 node_modules/
 dist/
 .vite/
+*.tsbuildinfo
 *.local
+
+# 前端打包产物（Docker build 时生成）
+backend/app/static/
 
 # Editor
 .idea/
 .vscode/
 *.swp
 *.swo
+.cursor/
 
 # Data / runtime
 data/app.db
 data/app.db-journal
 data/profile/
+data/preview.html
 *.log
+tmp/
+scratch/
 
 # OS
 .DS_Store
@@ -36,3 +44,4 @@ Thumbs.db
 # Env
 .env
 .env.local
+.env.*.local
