@@ -25,6 +25,10 @@ services:
       - JWT_SECRET=${JWT_SECRET:-}
       - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-1440}
       - AUTH_DISABLED=${AUTH_DISABLED:-false}
+      # 日志轮转参数（传给 app/logging_setup.py）
+      - LOG_MAX_BYTES=${LOG_MAX_BYTES:-20971520}        # 20MB
+      - LOG_BACKUP_COUNT=${LOG_BACKUP_COUNT:-5}        # 当前文件保留 .1 ~ .5
+      - LOG_KEEP_DAYS=${LOG_KEEP_DAYS:-30}             # archive 里 .gz 保留天数
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
       interval: 30s

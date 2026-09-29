@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -17,11 +18,17 @@ from app.api import settings as settings_api
 from app.auth import is_public_path
 from app.config import settings
 from app.db import init_db
+from app.logging_setup import setup_logging
 
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+# 必须在任何 logger.info 之前调用，确保所有日志走文件 + stderr 双通道
+LOGS_DIR = setup_logging(
+    logs_dir=Path("/app/data/logs"),
+    level=settings.log_level,
+    max_bytes=int(os.environ.get("LOG_MAX_BYTES", 20 * 1024 * 1024)),
+    backup_count=int(os.environ.get("LOG_BACKUP_COUNT", 5)),
+    keep_days=int(os.environ.get("LOG_KEEP_DAYS", 30)),
 )
+
 logger = logging.getLogger(__name__)
 
 

@@ -1,0 +1,13 @@
+# Docker daemon 日志配置（/etc/docker/daemon.json）
+# 把容器 stdout/stderr 重定向到 json 文件时，加上 max-size 和 max-file 限制，
+# 避免单个 json 日志涨到几十 GB。
+# 应用本身的日志已经写到 ./data/logs/ 持久化目录，
+# docker 默认 json 日志只是"实时观察"的副本，可以放心限制大小。
+
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "50m",
+    "max-file": "10"
+  }
+}

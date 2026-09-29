@@ -14,7 +14,7 @@ set -e
 echo "[entrypoint] 启动 crawler-panel (基于 DrissionPage)"
 
 # 确保数据目录存在
-mkdir -p /app/data /app/data/profile /app/data/certs
+mkdir -p /app/data /app/data/profile /app/data/certs /app/data/logs/archive
 
 # ---- JWT secret 持久化 ----
 SECRET_FILE="/app/data/.jwt_secret"
