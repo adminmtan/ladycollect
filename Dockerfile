@@ -54,11 +54,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 只先拷 manifest，最大化依赖层缓存
+# 顺序很关键：先把 backend/ 拷进来。
+# pyproject.toml 里 [tool.setuptools.packages.find] where=["backend"]，如果
+# pip install -e . 时 backend/ 不存在，setuptools egg_info 会报
+#   error: error in 'egg_base' option: 'backend' does not exist
+# 把 backend/ 一起 COPY 不会显著影响缓存命中：pyproject.toml 仍然在最顶层
+# 决定 pip install 层的 cache key，backend 内容变更只影响这一层。
 COPY pyproject.toml ./
+COPY backend ./backend
 # 主体依赖；cloakbrowser 已移除（依赖图冲突 + resolver 触发 maturin 构建失败）。
-# 不再 | tail：把 stdout/stderr 落到文件再 tail，避免 buildx 把完整 stderr 截断。
-# set -o pipefail 让 BUILD 失败时 exit != 0。
+# 把 stdout/stderr 落到文件再 tail，避免 buildx 把完整 stderr 截断。
+# set -o pipefail + exit $rc 让 BUILD 失败时 exit != 0。
 RUN set -o pipefail ; \
     pip install --no-cache-dir --break-system-packages -e . > /tmp/pip.out 2> /tmp/pip.err ; \
     rc=$? ; \
@@ -70,10 +76,7 @@ RUN set -o pipefail ; \
     rm -rf /root/.cache /tmp/*.whl /tmp/pip.out /tmp/pip.err ; \
     exit $rc
 
-# 后端源码（高频改动层）
-COPY backend ./backend
-
-# 前端产物（来自 stage 1）
+# 前端产物（来自 stage 1）拷到 backend 的 static 目录，让 FastAPI 直接挂载。
 COPY --from=frontend-build /build/frontend/dist ./frontend-dist
 RUN mkdir -p /app/backend/app/static && \
     cp -r /app/frontend-dist/. /app/backend/app/static/ && \
