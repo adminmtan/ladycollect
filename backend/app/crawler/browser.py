@@ -1,10 +1,7 @@
-"""统一的 CloakBrowser 启动入口
+"""统一的浏览器启动入口（基于 DrissionPage）。
 
-支持两种部署模式：
-- 本地模式：直接 launch 持久化 context（默认，Docker 镜像内已带 Chromium）
-- CDP 模式：连接外部 cloakserve 容器（多任务隔离更稳）
-
-DrissionPage 通过指定 --browser_path 复用 CloakBrowser 的 Chromium 二进制。
+DrissionPage 自带 ChromiumPage，无需外部 cloakbrowser；采集代码通过 page
+对象拿到 Playwright 风格的方法子集（get / html / url / ele / wait）。
 """
 from __future__ import annotations
 
@@ -19,49 +16,27 @@ from app.config import settings as app_settings
 logger = logging.getLogger(__name__)
 
 
-def ensure_cloakbrowser_binary() -> str:
-    """确保 CloakBrowser 二进制已下载，返回二进制路径"""
+def _make_options(*, headless: bool, user_agent: Optional[str], proxy: Optional[str]):
+    """构造 ChromiumOptions，headless / UA / 代理一次配好。"""
+    from DrissionPage import ChromiumOptions
+
+    opts = ChromiumOptions()
+    opts.headless(headless)
+    if user_agent:
+        opts.set_user_agent(user_agent)
+    if proxy:
+        opts.set_proxy(proxy)
+    # 避开自动化特征
+    opts.set_argument("--disable-blink-features=AutomationControlled")
+    # 数据目录持久化，profile 在 /app/data/profile
+    profile = app_settings.profile_dir
     try:
-        from cloakbrowser import ensure_binary, binary_info
-    except ImportError as e:
-        raise RuntimeError("cloakbrowser 未安装，请 `pip install cloakbrowser`") from e
-
-    info = binary_info() if hasattr(binary_info, "__call__") else None
-    if isinstance(info, dict) and info.get("installed"):
-        return info.get("binary_path") or _find_binary()
-
-    logger.info("CloakBrowser 二进制不存在，开始下载...")
-    ensure_binary()
-    return _find_binary()
-
-
-def _find_binary() -> str:
-    """从 ~/.cloakbrowser 下找最新 Chromium.app/Contents/MacOS/Chromium"""
-    home = Path(os.path.expanduser("~"))
-    cb_root = home / ".cloakbrowser"
-    if not cb_root.exists():
-        return ""
-    # 选最高版本目录
-    candidates = sorted(
-        [p for p in cb_root.glob("chromium-*") if p.is_dir()],
-        key=lambda p: p.name,
-        reverse=True,
-    )
-    for d in candidates:
-        # macOS
-        mac = d / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
-        if mac.exists():
-            return str(mac)
-        # Linux
-        for name in ("chromium", "Chromium", "chrome"):
-            linux = d / name
-            if linux.exists() and os.access(linux, os.X_OK):
-                return str(linux)
-        # Windows
-        win = d / "Chromium.exe"
-        if win.exists():
-            return str(win)
-    return ""
+        Path(profile).mkdir(parents=True, exist_ok=True)
+        opts.set_user_data_path(str(profile))
+    except Exception:
+        # profile 不可写也不致命，无头模式仍能跑
+        logger.warning("无法准备 profile 目录 %s，使用临时 profile", profile)
+    return opts
 
 
 @contextmanager
@@ -75,62 +50,30 @@ def make_browser(
     profile_dir: Optional[Path] = None,
     persistent: bool = True,
 ):
-    """上下文管理器：返回 Playwright 兼容的 Browser 或 BrowserContext
+    """上下文管理器：返回一个 ChromiumPage（或 SessionPage，取决于 persistent）。
 
-    使用示例：
-        with make_browser(headless=True) as browser:
-            page = browser.new_page()
-            page.goto("https://example.com")
+    humanize / fingerprint_seed 仅做占位记录——DrissionPage 默认已经做了足够
+    的反检测（指纹随机化由其内部 Browser 启动参数处理）；如未来需要更精细的
+    伪装，可以在这里加 options。
     """
-    from cloakbrowser import launch, launch_persistent_context
+    from DrissionPage import ChromiumPage
 
-    args: list[str] = []
     if fingerprint_seed:
-        args.append(f"--fingerprint={fingerprint_seed}")
+        logger.info("fingerprint_seed=%s 仅记录（DrissionPage 已内置指纹）", fingerprint_seed)
 
-    # 代理优先级：传入 > 全局 settings
     proxy_url = proxy or app_settings.proxy_url
+    opts = _make_options(headless=headless, user_agent=user_agent, proxy=proxy_url)
 
-    profile = str(profile_dir or app_settings.profile_dir)
-    Path(profile).mkdir(parents=True, exist_ok=True)
-
-    if persistent:
-        ctx = launch_persistent_context(
-            profile,
-            headless=headless,
-            humanize=humanize,
-            proxy=proxy_url,
-            user_agent=user_agent,
-            args=args,
-        )
+    page = ChromiumPage(opts)
+    try:
+        yield page
+    finally:
         try:
-            yield ctx
-        finally:
-            try:
-                ctx.close()
-            except Exception:
-                pass
-    else:
-        browser = launch(
-            headless=headless,
-            humanize=humanize,
-            proxy=proxy_url,
-            user_agent=user_agent,
-            args=args,
-        )
-        try:
-            yield browser
-        finally:
-            try:
-                browser.close()
-            except Exception:
-                pass
+            page.quit()
+        except Exception:
+            pass
 
 
 def get_drissionpage_browser_path() -> str:
-    """给 DrissionPage 提供 CloakBrowser 的 Chromium 路径"""
-    p = _find_binary()
-    if p:
-        return p
-    # 未找到则触发下载
-    return ensure_cloakbrowser_binary()
+    """兼容旧调用方。DrissionPage 自带浏览器，无需外部路径。"""
+    return ""

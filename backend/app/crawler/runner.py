@@ -515,7 +515,7 @@ def _has_age_gate(page) -> bool:
     验证门特征：存在 <a class="enter-btn">满18岁，请点此进入</a>
     """
     try:
-        return page.locator("a.enter-btn").count() > 0
+        return page.ele("css:a.enter-btn", timeout=1) is not None
     except Exception:
         return False
 
@@ -546,8 +546,9 @@ def run_task_sync(
     """同步执行 Task，返回 Job id
 
     use_browser：
-      - None（默认）：自动检测。检测到 cloakbrowser 用浏览器，否则降级 httpx。
-      - True：强制使用 CloakBrowser
+      - None（默认）：自动检测。强制浏览器站点（adapter=sehuatang）走浏览器，
+        其余默认走 httpx（更稳更快）。
+      - True：强制使用浏览器（DrissionPage）
       - False：强制使用 httpx
     """
     from app.db import get_session
@@ -633,19 +634,14 @@ def run_task_sync(
                     overall_ok = False
                     break
 
-                # per-site use_browser 决策：强制 / 自动检测
+                # per-site use_browser 决策：强制 / 默认
                 if use_browser is None:
                     if _force_browser(site):
                         ub = True
-                        _append_log(job, f"站点 {site.host} 强制使用 CloakBrowser（adapter={site.adapter}）", session)
+                        _append_log(job, f"站点 {site.host} 强制使用浏览器（adapter={site.adapter}）", session)
                     else:
-                        try:
-                            import cloakbrowser  # noqa: F401
-
-                            ub = True
-                        except Exception:
-                            ub = False
-                            _append_log(job, "未检测到 cloakbrowser，自动降级为 httpx 模式", session)
+                        # 没有强制要求的站点默认走 httpx（更稳更快）；用户可在前端勾选"使用浏览器"覆盖
+                        ub = False
                 else:
                     ub = bool(use_browser)
 
@@ -796,36 +792,37 @@ def _crawl_with_browser(
         user_agent=user_agent,
         fingerprint_seed=site.fingerprint_seed,
         profile_dir=app_settings.profile_dir,
-    ) as ctx:
-        page = ctx.new_page()
-
+    ) as page:
+        nav_timeout = app_settings.default_request_timeout
         list_parser, detail_parser = _select_parsers(site)
         specs = _iter_specs(site, task, job, session)
         for spec in specs:
             if cancel_ev.is_set():
                 raise JobCancelled()
             try:
-                page.goto(spec.url, wait_until="domcontentloaded", timeout=app_settings.default_request_timeout * 1000)
+                page.get(spec.url, timeout=nav_timeout)
             except Exception as e:
                 _append_log(job, f"列表页加载失败 {spec.url}: {e}", session)
                 continue
 
             # ★ 年龄验证门（sehuatang 等 Discuz 站）：检测并点击 enter-btn
-            # 点击后页面通常会跳到首页（href="./"），需要重新 goto 真实列表页
+            # 点击后页面通常会跳到首页（href="./"），需要重新 get 真实列表页
             try:
                 if _has_age_gate(page):
                     _append_log(job, f"检测到年龄验证门，点击进入：{spec.url}", session)
-                    page.locator("a.enter-btn").first.click(timeout=5000)
-                    page.wait_for_load_state("domcontentloaded", timeout=app_settings.default_request_timeout * 1000)
-                    page.wait_for_timeout(1500)
+                    enter_btn = page.ele("css:a.enter-btn", timeout=5)
+                    if enter_btn:
+                        enter_btn.click()
+                        page.wait.load_start(timeout=nav_timeout)
+                        page.sleep(1.5)
                     # enter-btn 通常跳到首页，需要重抓列表页
                     if not _same_discuz_path(page.url, spec.url):
-                        page.goto(spec.url, wait_until="domcontentloaded", timeout=app_settings.default_request_timeout * 1000)
-                        page.wait_for_timeout(1500)
+                        page.get(spec.url, timeout=nav_timeout)
+                        page.sleep(1.5)
             except Exception as e:
                 _append_log(job, f"年龄验证门处理失败（继续尝试解析）：{e}", session)
 
-            html = page.content()
+            html = page.html
             items = list_parser(html, site.base_url)
             _append_log(job, f"[p{spec.page}] {spec.url} 发现 {len(items)} 篇", session)
 
@@ -836,16 +833,12 @@ def _crawl_with_browser(
                 if not keep:
                     continue
                 try:
-                    page.goto(
-                        meta.url,
-                        wait_until="domcontentloaded",
-                        timeout=app_settings.default_request_timeout * 1000,
-                    )
+                    page.get(meta.url, timeout=nav_timeout)
                 except Exception as e:
                     _append_log(job, f"详情页加载失败 {meta.url}: {e}", session)
                     continue
 
-                detail = detail_parser(page.content(), site.base_url)
+                detail = detail_parser(page.html, site.base_url)
                 if task.only_with_links and not (detail.magnet or detail.ed2k):
                     _append_log(
                         job,

@@ -40,10 +40,6 @@ class Settings(BaseSettings):
     # 全局代理（站点级 proxy 优先）
     proxy_url: Optional[str] = Field(default=None)
 
-    # CloakBrowser
-    cloakbrowser_license_key: Optional[str] = Field(default=None)
-    cloakbrowser_auto_update: bool = Field(default=True)
-
     # 日志
     log_level: str = Field(default="INFO")
 

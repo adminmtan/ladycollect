@@ -56,11 +56,9 @@ WORKDIR /app
 
 # 只先拷 manifest，最大化依赖层缓存
 COPY pyproject.toml ./
-# cloakbrowser 的依赖图会和 playwright/DrissionPage 的传递依赖产生 resolver 冲突，
-# 但运行期其实只需要 cloakbrowser 自己 + playwright。所以先装主体、最后单独 --no-deps 装 cloakbrowser。
+# 主体依赖；cloakbrowser 已移除（依赖图冲突 + resolver 触发 maturin 构建失败）。
 RUN pip install --no-cache-dir --break-system-packages -e . 2>&1 | tail -200 ; \
-    pip install --no-cache-dir --break-system-packages --no-deps cloakbrowser 2>&1 | tail -50 ; \
-    echo "==== pip install exit codes: main=${PIPESTATUS[0]} cloakbrowser=${PIPESTATUS[1]} ====" ; \
+    echo "==== pip install exit=${PIPESTATUS[0]} ====" ; \
     rm -rf /root/.cache /tmp/*.whl
 
 # 后端源码（高频改动层）

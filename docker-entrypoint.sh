@@ -1,17 +1,11 @@
 #!/usr/bin/env bash
 # 容器启动入口：
-#   1) 写入 CloakBrowser license
-#   2) 若 admin 用户尚未初始化密码：用 Python 生成强随机密码并打印到日志
-#   3) 确保 JWT secret 持久化（/app/data/.jwt_secret）
-#   4) 预下载 CloakBrowser 二进制
-#   5) exec CMD
+#   1) 若 admin 用户尚未初始化密码：用 Python 生成强随机密码并打印到日志
+#   2) 确保 JWT secret 持久化（/app/data/.jwt_secret）
+#   3) exec CMD
 set -e
 
-echo "[entrypoint] CLOAKBROWSER_LICENSE_KEY=${CLOAKBROWSER_LICENSE_KEY:+***set***}"
-if [ -n "${CLOAKBROWSER_LICENSE_KEY}" ]; then
-    printf '%s' "${CLOAKBROWSER_LICENSE_KEY}" > "${HOME:-/root}/.cloakbrowser/license.key"
-    echo "[entrypoint] License 已写入"
-fi
+echo "[entrypoint] 启动 crawler-panel (基于 DrissionPage)"
 
 # 确保数据目录存在
 mkdir -p /app/data /app/data/profile /app/data/certs
@@ -66,12 +60,6 @@ with Session(engine) as s:
     print("================================================================")
     print("")
 PY
-
-# 预下载 CloakBrowser 二进制（仅当未存在时）
-if [ ! -d "${HOME:-/root}/.cloakbrowser/chromium-"* ] 2>/dev/null; then
-    echo "[entrypoint] 预下载 CloakBrowser 二进制..."
-    python3 -m cloakbrowser install || echo "[entrypoint] 预下载失败，将在使用时重试"
-fi
 
 echo "[entrypoint] 启动应用..."
 exec "$@"
