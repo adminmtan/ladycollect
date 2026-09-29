@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# 本机直接推 Docker Hub 镜像（CI 失败 / 偶尔手动推送用）
+# 本机直接推 GHCR 镜像（CI 失败 / 偶尔手动推送用）
 #
 # 用法：
-#   IMAGE=youruser/crawler-panel TAG=main-$(git rev-parse --short HEAD) \
-#     DOCKERHUB_USERNAME=xxx DOCKERHUB_TOKEN=xxx ./scripts/push.sh
+#   IMAGE=ghcr.io/adminmtan/ladycollect TAG=main-$(git rev-parse --short HEAD) \
+#     GITHUB_TOKEN=ghp_xxx ./scripts/push.sh
 #
 # 也可以：
 #   ./scripts/push.sh v0.1.0
 #   ./scripts/push.sh main
 #
 # 需要的工具：docker (Desktop / CLI)
+# 需要的凭证：GITHUB_TOKEN（需要有 packages:write 权限的 PAT）
 set -euo pipefail
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
@@ -20,9 +21,9 @@ fi
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 
 # 默认值
-: "${IMAGE:=mtan/crawler-panel}"
-: "${DOCKERHUB_USERNAME:?请先设置 DOCKERHUB_USERNAME}"
-: "${DOCKERHUB_TOKEN:?请先设置 DOCKERHUB_TOKEN（Access Token，不要用密码）}"
+: "${IMAGE:=ghcr.io/adminmtan/ladycollect}"
+: "${GITHUB_USERNAME:=adminmtan}"
+: "${GITHUB_TOKEN:?请先设置 GITHUB_TOKEN（需 packages:write 权限的 PAT）}"
 
 # 确定 tag
 if [ -n "${1:-}" ]; then
@@ -34,8 +35,8 @@ else
   TAG="main-${SHORT}"
 fi
 
-echo "==> 登录 Docker Hub"
-echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+echo "==> 登录 GHCR (ghcr.io)"
+echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_USERNAME}" --password-stdin
 
 echo "==> 构建 ${IMAGE}:${TAG}"
 docker build \

@@ -81,26 +81,21 @@ docker run -d --name watchtower \
   crawler-panel
 ```
 
-### Docker Hub 发布（开发者侧）
+### GHCR 发布（开发者侧）
 
 CI 自动：往 `main` 推 → 自动出 `latest` 和 `main-<sha>` 标签；
 推 `v0.1.0` tag → 自动出 `0.1.0`、`0.1`、`latest`。
 
-GitHub 仓库需要配置 secrets：
-
-| Secret | 用途 |
-|---|---|
-| `DOCKERHUB_USERNAME` | Docker Hub 用户名 |
-| `DOCKERHUB_TOKEN`     | Docker Hub Access Token（Settings → Security） |
+镜像推到 `ghcr.io/adminmtan/ladycollect`（GHCR，GitHub 自带容器仓库，跟仓走，**不需要额外配置 secret**，用仓库内置的 `GITHUB_TOKEN` + `packages: write` 权限即可）。
 
 **手动推**（不走 CI 时）：
 
 ```bash
-IMAGE=youruser/crawler-panel \
-  DOCKERHUB_USERNAME=youruser \
-  DOCKERHUB_TOKEN=xxxxx \
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx \
   ./scripts/push.sh
 ```
+
+需要 PAT（Personal Access Token），勾选 `write:packages` 权限。
 
 ## 目录结构
 
