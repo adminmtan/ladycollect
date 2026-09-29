@@ -40,13 +40,15 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             # 主分支 → :latest + :main-<sha>
-            # enable 值必须用引号包住，metadata-action 才认
-            type=raw,value=latest,enable="{{is_default_branch}}"
+            # 注意：enable 后的 {{...}} 必须裸写，不加引号也不加 $ 前缀。
+            # GitHub Actions 不会替换 {{ }}（只有 ${{ }} 才会替换），
+            # metadata-action 会把它当 Handlebars 表达式解析。
+            type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short,prefix=main
             # git tag (v0.1.0) → :0.1.0, :0.1, :latest
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable="{{is_tag}}"
+            type=raw,value=latest,enable={{is_tag}}
           labels: |
             org.opencontainers.image.title=Crawler Panel
             org.opencontainers.image.description=1mei.live 采集管理面板
