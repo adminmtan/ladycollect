@@ -111,6 +111,18 @@ def _append_log(job: Job, msg: str, session: Session) -> None:
     session.commit()
 
 
+def _log_progress(job_id: int, msg: str, level: int = logging.INFO) -> None:
+    """往 crawler.log 写一条带 job_id 前缀的进度日志。
+
+    行为：
+    - 一律写入 logger（stderr + ./data/logs/crawler.log）
+    - 失败/异常可传 level=logging.WARNING/ERROR/EXCEPTION
+    - 不阻塞数据库；日志量很大时不会拖慢采集
+    """
+    prefix = f"[job={job_id}]"
+    logger.log(level, "%s %s", prefix, msg)
+
+
 def _render_job_display_name(task: Task, now: Optional["datetime"] = None) -> str:
     """按模板渲染 Job 名，默认 '{task} {ymd}'。
 
@@ -613,6 +625,10 @@ def run_task_sync(
             f"启动任务 #{job_id}：name={job.display_name or task.name}, sites=[{site_names}]",
             session,
         )
+        _log_progress(job_id, f"启动任务 #{job_id} name={job.display_name or task.name} sites=[{site_names}]")
+        _log_progress(job_id, f"任务参数: kind={task.kind} max_pages={task.max_pages} "
+                             f"keyword={task.keyword!r} date_from={task.date_from} date_to={task.date_to} "
+                             f"category={task.category!r} only_with_links={task.only_with_links}")
 
         # 调度触发的归档任务：把 date_from/date_to 重写成"今天"
         if getattr(task, "_scheduled_run", False) and task.kind == "list_date" and not task.date_from and not task.date_to:
@@ -646,6 +662,7 @@ def run_task_sync(
                     ub = bool(use_browser)
 
                 _append_log(job, f"── 开始采集站点 {site.host} ──", session)
+                _log_progress(job_id, f"── 开始采集站点 {site.host} adapter={site.adapter or 'onemei'} ──")
                 try:
                     if ub:
                         _crawl_with_browser(session, site, task, job, emit, cancel_ev)
@@ -655,12 +672,15 @@ def run_task_sync(
                     cancelled = True
                     overall_ok = False
                     _append_log(job, f"⛔ 采集被取消（站点 {site.host}）", session)
+                    _log_progress(job_id, f"⛔ 采集被取消（站点 {site.host}）", level=logging.WARNING)
                     break
                 except Exception as e:
                     overall_ok = False
                     logger.exception("site %s failed", site.host)
                     _append_log(job, f"❌ 站点 {site.host} 采集失败：{e}", session)
+                    _log_progress(job_id, f"❌ 站点 {site.host} 采集失败：{e}", level=logging.ERROR)
                     continue
+                _log_progress(job_id, f"✓ 站点 {site.host} 采集完成（待计总数）")
         finally:
             _clear_cancel_event(job_id)
 
@@ -675,9 +695,17 @@ def run_task_sync(
         job.finished_at = utcnow()
         session.add(job)
         session.commit()
+        # 终态汇总：写一条醒目的单行到 crawler.log，便于运维 grep
+        elapsed = (job.finished_at - job.started_at).total_seconds() if job.started_at else 0
+        summary = (
+            f"任务 #{job_id} 终态 status={job.status} 发现={job.progress_posts or 0} "
+            f"入库={job.posts_saved or 0} 失败={(job.progress_posts or 0) - (job.posts_saved or 0)} "
+            f"耗时={elapsed:.1f}s"
+        )
         if cancelled:
             _append_log(job, f"⛔ 任务已取消：发现 {job.progress_posts}，入库 {job.posts_saved}", session)
             emit({"status": "cancelled", "msg": f"任务已取消：发现 {job.progress_posts}，入库 {job.posts_saved}"})
+            _log_progress(job_id, summary, level=logging.WARNING)
         else:
             _append_log(
                 job,
@@ -685,6 +713,8 @@ def run_task_sync(
                 session,
             )
             emit({"status": job.status, "msg": f"采集结束：发现 {job.progress_posts}，入库 {job.posts_saved}"})
+            level = logging.INFO if job.status == "done" else logging.ERROR
+            _log_progress(job_id, summary, level=level)
 
         return job_id
     finally:
@@ -716,7 +746,9 @@ def _crawl_with_http(
             pass
 
     list_parser, detail_parser = _select_parsers(site)
-    specs = _iter_specs(site, task, job, session)
+    specs = list(_iter_specs(site, task, job, session))
+    spec_total = len(specs)
+    _log_progress(job_id, f"[{site.host}] 列表页总数={spec_total} 使用浏览器={False} UA={headers['User-Agent'][:40]}…")
     for spec in specs:
         if cancel_ev.is_set():
             raise JobCancelled()
@@ -724,10 +756,12 @@ def _crawl_with_http(
             html = fetch_html(spec.url, headers=headers)
         except Exception as e:
             _append_log(job, f"列表页请求失败 {spec.url}: {e}", session)
+            _log_progress(job_id, f"[{site.host}][p{spec.page}] 列表页请求失败: {e}", level=logging.WARNING)
             continue
 
         items = list_parser(html, site.base_url)
         _append_log(job, f"[p{spec.page}] {spec.url} 发现 {len(items)} 篇", session)
+        _log_progress(job_id, f"[{site.host}][p{spec.page}/{spec_total}] {spec.url} 发现 {len(items)} 篇")
 
         for meta in items:
             if cancel_ev.is_set():
@@ -739,22 +773,30 @@ def _crawl_with_http(
                 detail_html = fetch_html(meta.url, headers=headers)
             except Exception as e:
                 _append_log(job, f"详情页请求失败 {meta.url}: {e}", session)
+                _log_progress(job_id, f"[{site.host}][p{spec.page}] 详情页请求失败 {meta.url}: {e}", level=logging.WARNING)
                 continue
 
             detail = detail_parser(detail_html, site.base_url)
             if task.only_with_links and not (detail.magnet or detail.ed2k):
+                _log_progress(job_id, f"[{site.host}][p{spec.page}] 详情页无 magnet/ed2k，跳过: {meta.url}")
                 continue
 
             try:
                 _save_post(session, site, task, job, meta, detail)
             except Exception as e:
                 _append_log(job, f"入库失败 {meta.url}: {e}", session)
+                _log_progress(job_id, f"[{site.host}][p{spec.page}] 入库失败 {meta.url}: {e}", level=logging.ERROR)
                 continue
 
             job.progress_posts = (job.progress_posts or 0) + 1
             job.posts_saved = (job.posts_saved or 0) + 1
             session.add(job)
             session.commit()
+            _log_progress(
+                job_id,
+                f"[{site.host}][p{spec.page}] +1 saved title={(detail.title or meta.title)[:50]!r} "
+                f"saved_total={job.posts_saved}",
+            )
             emit(
                 {
                     "status": "running",
@@ -795,7 +837,9 @@ def _crawl_with_browser(
     ) as page:
         nav_timeout = app_settings.default_request_timeout
         list_parser, detail_parser = _select_parsers(site)
-        specs = _iter_specs(site, task, job, session)
+        specs = list(_iter_specs(site, task, job, session))
+        spec_total = len(specs)
+        _log_progress(job_id, f"[{site.host}] 列表页总数={spec_total} 使用浏览器=True proxy={proxy or '(none)'}")
         for spec in specs:
             if cancel_ev.is_set():
                 raise JobCancelled()
@@ -803,6 +847,7 @@ def _crawl_with_browser(
                 page.get(spec.url, timeout=nav_timeout)
             except Exception as e:
                 _append_log(job, f"列表页加载失败 {spec.url}: {e}", session)
+                _log_progress(job_id, f"[{site.host}][p{spec.page}] 列表页加载失败: {e}", level=logging.WARNING)
                 continue
 
             # ★ 年龄验证门（sehuatang 等 Discuz 站）：检测并点击 enter-btn
@@ -810,6 +855,7 @@ def _crawl_with_browser(
             try:
                 if _has_age_gate(page):
                     _append_log(job, f"检测到年龄验证门，点击进入：{spec.url}", session)
+                    _log_progress(job_id, f"[{site.host}][p{spec.page}] 检测到年龄验证门，点击进入")
                     enter_btn = page.ele("css:a.enter-btn", timeout=5)
                     if enter_btn:
                         enter_btn.click()
@@ -821,10 +867,12 @@ def _crawl_with_browser(
                         page.sleep(1.5)
             except Exception as e:
                 _append_log(job, f"年龄验证门处理失败（继续尝试解析）：{e}", session)
+                _log_progress(job_id, f"[{site.host}][p{spec.page}] 年龄验证门处理失败: {e}", level=logging.WARNING)
 
             html = page.html
             items = list_parser(html, site.base_url)
             _append_log(job, f"[p{spec.page}] {spec.url} 发现 {len(items)} 篇", session)
+            _log_progress(job_id, f"[{site.host}][p{spec.page}/{spec_total}] {spec.url} 发现 {len(items)} 篇")
 
             for meta in items:
                 if cancel_ev.is_set():
@@ -836,6 +884,7 @@ def _crawl_with_browser(
                     page.get(meta.url, timeout=nav_timeout)
                 except Exception as e:
                     _append_log(job, f"详情页加载失败 {meta.url}: {e}", session)
+                    _log_progress(job_id, f"[{site.host}][p{spec.page}] 详情页加载失败 {meta.url}: {e}", level=logging.WARNING)
                     continue
 
                 detail = detail_parser(page.html, site.base_url)
@@ -845,12 +894,14 @@ def _crawl_with_browser(
                         f"详情页无 magnet/ed2k，跳过: {meta.url}",
                         session,
                     )
+                    _log_progress(job_id, f"[{site.host}][p{spec.page}] 详情页无 magnet/ed2k，跳过: {meta.url}")
                     continue
 
                 try:
                     saved = _save_post(session, site, task, job, meta, detail)
                 except Exception as e:
                     _append_log(job, f"入库失败 {meta.url}: {e}", session)
+                    _log_progress(job_id, f"[{site.host}][p{spec.page}] 入库失败 {meta.url}: {e}", level=logging.ERROR)
                     continue
 
                 if not saved:
@@ -860,12 +911,18 @@ def _crawl_with_browser(
                         f"硬去重命中（链接已存在），跳过: {meta.url}",
                         session,
                     )
+                    _log_progress(job_id, f"[{site.host}][p{spec.page}] 硬去重命中（链接已存在），跳过: {meta.url}")
                     continue
 
                 job.progress_posts = (job.progress_posts or 0) + 1
                 job.posts_saved = (job.posts_saved or 0) + 1
                 session.add(job)
                 session.commit()
+                _log_progress(
+                    job_id,
+                    f"[{site.host}][p{spec.page}] +1 saved title={(detail.title or meta.title)[:50]!r} "
+                    f"saved_total={job.posts_saved}",
+                )
                 emit(
                     {
                         "status": "running",
