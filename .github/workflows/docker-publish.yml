@@ -9,17 +9,15 @@ on:
   workflow_dispatch:      # 手动触发，方便 ad-hoc 推
 
 env:
-  REGISTRY: ghcr.io
-  # 镜像名 = ghcr.io/<owner>/<repo>
-  # github.repository 形如 "adminmtan/ladycollect"，正好是 GHCR 镜像路径
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  REGISTRY: docker.io
+  # Docker Hub 镜像名 = <hub user>/<repo>，默认 root namespace 即可
+  IMAGE_NAME: adminmtan/ladycollect
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write      # 推 GHCR 必须
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,28 +25,13 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
-        # 用仓库自带的 GITHUB_TOKEN 即可，不需要额外 secret
-        # 用 curl 走 /users/login 而不是 docker/login-action，是因
-        # docker/login-action@v3 触发 GHCR /auth 时经常 429，
-        # 而 curl + 显式重试更稳。
+      - name: Log in to Docker Hub
         if: github.event_name != 'pull_request'
-        env:
-          REGISTRY_USER: ${{ github.actor }}
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          echo "Logging in to ${{ env.REGISTRY }} as ${REGISTRY_USER}..."
-          for i in 1 2 3 4 5; do
-            if echo "${REGISTRY_TOKEN}" | docker login "${{ env.REGISTRY }}" -u "${REGISTRY_USER}" --password-stdin; then
-              echo "Login OK on attempt ${i}"
-              exit 0
-            fi
-            echo "Login attempt ${i} failed, retrying in $((i * 10))s..."
-            sleep $((i * 10))
-          done
-          echo "::error::Failed to log in to GHCR after 5 attempts"
-          exit 1
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels)
         id: meta
@@ -80,7 +63,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           # 多架构按需打开；首次发布建议仅 amd64，节省时间
           platforms: linux/amd64
-          # 推送层缓存到 GHCR 加速二次构建
+          # 推送层缓存到 Docker Hub 加速二次构建
           cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
           cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
 
