@@ -1,8 +1,9 @@
 services:
   app:
-    # 镜像：从 Docker Hub 拉取（跟 .github/workflows/docker-publish.yml 里的 REGISTRY / IMAGE_NAME 对齐）
+    # 镜像：从 GitHub Container Registry 拉取（免登录可见的 public 仓库）
+    # 想拉私有镜像请先 docker login ghcr.io
     # 升级：改 IMAGE_TAG 环境变量后 docker compose pull && up -d
-    image: ${IMAGE:-adminmtan/ladycollect}:${IMAGE_TAG:-latest}
+    image: ${IMAGE:-ghcr.io/adminmtan/ladycollect}:${IMAGE_TAG:-latest}
     restart: unless-stopped
     container_name: crawler-panel
     ports:
