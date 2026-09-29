@@ -2,7 +2,9 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
 const routes = [
-  { path: '/login', component: () => import('@/views/LoginView.vue'), name: 'login', meta: { public: true } },
+  // 公开页（无侧栏布局）
+  { path: '/login', component: () => import('@/views/LoginView.vue'), name: 'login', meta: { public: true, layout: 'blank' } },
+  // 应用页（带侧栏布局）
   { path: '/', component: () => import('@/views/DashboardView.vue'), name: 'dashboard' },
   { path: '/sites', component: () => import('@/views/SitesView.vue'), name: 'sites' },
   { path: '/tasks', component: () => import('@/views/TasksView.vue'), name: 'tasks' },

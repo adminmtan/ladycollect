@@ -1,5 +1,9 @@
 <template>
-  <el-container class="app-container">
+  <!-- 公开页（登录、初始化等）直接铺满全屏 -->
+  <router-view v-if="$route.meta?.layout === 'blank'" />
+
+  <!-- 其他页面套侧栏 + 顶栏布局 -->
+  <el-container v-else class="app-container">
     <!-- 侧边导航 -->
     <el-aside class="sidebar">
       <!-- Logo 区域 -->

@@ -108,21 +108,10 @@
               :autocomplete="mode === 'setup' ? 'new-password' : 'current-password'"
               size="large"
             />
-          </el-form-item>
-
-          <el-form-item
-            v-if="mode === 'setup'"
-            label="确认密码"
-            prop="confirmPassword"
-          >
-            <el-input
-              v-model="form.confirmPassword"
-              type="password"
-              show-password
-              placeholder="再次输入以确认"
-              autocomplete="new-password"
-              size="large"
-            />
+            <span v-if="mode === 'setup'" class="field-hint">
+              <el-icon><View /></el-icon>
+              点击右侧眼睛图标可显示明文，请务必记住后再提交。
+            </span>
           </el-form-item>
 
           <el-button
@@ -164,7 +153,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { ArrowRight } from '@element-plus/icons-vue'
+import { ArrowRight, View } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
@@ -180,7 +169,6 @@ const hintType = ref<'error' | 'info'>('info')
 const form = reactive({
   username: '',
   password: '',
-  confirmPassword: '',
 })
 
 const year = new Date().getFullYear()
@@ -195,17 +183,6 @@ const rules = reactive<FormRules>({
           cb(new Error('至少 8 位'))
           return
         }
-        cb()
-      },
-      trigger: 'blur',
-    },
-  ],
-  confirmPassword: [
-    {
-      validator: (_r, v, cb) => {
-        if (mode.value !== 'setup') return cb()
-        if (!v) return cb(new Error('请再次输入密码'))
-        if (v !== form.password) return cb(new Error('两次密码不一致'))
         cb()
       },
       trigger: 'blur',
@@ -483,6 +460,21 @@ async function submit() {
 
 .login-form :deep(.el-input__inner::placeholder) {
   color: var(--color-muted-foreground);
+}
+
+.field-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-muted-foreground);
+}
+
+.field-hint .el-icon {
+  font-size: 14px;
+  color: var(--color-accent);
 }
 
 .submit-btn {
