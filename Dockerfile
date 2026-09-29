@@ -56,7 +56,9 @@ WORKDIR /app
 
 # 只先拷 manifest，最大化依赖层缓存
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir --break-system-packages -e . && \
+# 调试：去掉 quiet，让 pip 把所有行都打出来；并且不去掉 stderr，便于诊断
+RUN pip install --no-cache-dir --break-system-packages -e . 2>&1 | tail -200 ; \
+    echo "==== pip install exit=${PIPESTATUS[0]} ====" ; \
     rm -rf /root/.cache /tmp/*.whl
 
 # 后端源码（高频改动层）

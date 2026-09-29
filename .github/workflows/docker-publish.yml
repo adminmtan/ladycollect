@@ -97,11 +97,10 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # 多架构按需打开；首次发布建议仅 amd64，节省时间
           platforms: linux/amd64
-          # 推送层缓存到 Docker Hub 加速二次构建
-          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
+          # 暂时禁用层缓存，排查 pip install 失败
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Image digest summary
         if: github.event_name != 'pull_request'
