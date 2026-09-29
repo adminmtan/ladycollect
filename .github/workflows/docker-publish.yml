@@ -9,10 +9,9 @@ on:
   workflow_dispatch:      # 手动触发，方便 ad-hoc 推
 
 env:
-  REGISTRY: docker.io
-  # Docker Hub 镜像名 = <hub user>/<repo>，默认 root namespace 即可
-  IMAGE_NAME: adminmtan/ladycollect
-  # 调试期间展开 BuildKit 全部输出，让 GitHub 日志能看到 pip 的真实 stderr
+  # 换成 GitHub Container Registry，无需 Docker Hub 账号
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.actor }}/ladycollect
   BUILDKIT_PROGRESS: plain
   PROGRESS_NO_TRUNC: 1
 
@@ -21,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write       # 必须！允许 push 到 ghcr.io
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,56 +28,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # ============================================================
-      # DEBUG: 预跑一次 pip install，把完整 stderr 上传 artifact
-      # 这样 build 失败时能从公开仓库下载看到 pip 的真实报错
-      # ============================================================
-      - name: Debug — reproduce pip install
-        continue-on-error: true
-        run: |
-          echo "===== START DEBUG PIP INSTALL ====="
-          docker run --rm \
-            -v "${{ github.workspace }}:/app" \
-            -w /app \
-            python:3.12-slim \
-            bash -c '
-              set -o pipefail
-              echo "==== python version ===="
-              python3 --version
-              echo "==== pip install -e . ===="
-              pip install --no-cache-dir --break-system-packages -e . > /tmp/pip.out 2> /tmp/pip.err
-              rc=$?
-              echo "==== pip install exit=$rc ===="
-              echo "==== last 200 of stdout ===="
-              tail -n 200 /tmp/pip.out
-              echo "==== last 200 of stderr ===="
-              tail -n 200 /tmp/pip.err
-              echo "==== END ===="
-            '
-          echo "===== END DEBUG ====="
-        env:
-          PIP_DISABLE_PIP_VERSION_CHECK: 1
-
-      - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request'
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # 主分支推送 → :latest + :main-<sha>
-            # enable 用 GitHub Actions 表达式 (带 $ 前缀)，
-            # 结果会是字符串 'true' 或 'false'，metadata-action 校验通过。
             type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
             type=sha,format=short,prefix=main
-            # git tag 推送 (v0.1.0) → :0.1.0, :0.1, :latest
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
@@ -96,7 +61,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
-          # 暂时禁用层缓存，排查 pip install 失败
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -105,3 +69,6 @@ jobs:
         run: |
           echo "已推送：${{ steps.meta.outputs.tags }}"
           echo "Digest：${{ steps.meta.outputs.digest }}"
+          echo ""
+          echo "在 NAS 上拉取命令："
+          echo "  docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
