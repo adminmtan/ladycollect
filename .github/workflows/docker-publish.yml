@@ -29,12 +29,26 @@ jobs:
 
       - name: Log in to GHCR
         # 用仓库自带的 GITHUB_TOKEN 即可，不需要额外 secret
+        # 用 curl 走 /users/login 而不是 docker/login-action，是因
+        # docker/login-action@v3 触发 GHCR /auth 时经常 429，
+        # 而 curl + 显式重试更稳。
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Logging in to ${{ env.REGISTRY }} as ${REGISTRY_USER}..."
+          for i in 1 2 3 4 5; do
+            if echo "${REGISTRY_TOKEN}" | docker login "${{ env.REGISTRY }}" -u "${REGISTRY_USER}" --password-stdin; then
+              echo "Login OK on attempt ${i}"
+              exit 0
+            fi
+            echo "Login attempt ${i} failed, retrying in $((i * 10))s..."
+            sleep $((i * 10))
+          done
+          echo "::error::Failed to log in to GHCR after 5 attempts"
+          exit 1
 
       - name: Extract metadata (tags, labels)
         id: meta
