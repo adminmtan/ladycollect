@@ -17,6 +17,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "lxml>=5.3.0",
     "DrissionPage>=4.0.0",
+    "cloakbrowser>=0.5.0",
     "playwright>=1.49.0",
     "websockets>=13.0",
     "bcrypt>=4.2.0",
