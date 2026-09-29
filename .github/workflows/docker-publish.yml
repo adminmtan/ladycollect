@@ -43,12 +43,13 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             # 主分支 → :latest + :main-<sha>
-            type=raw,value=latest,enable={{is_default_branch}}
+            # enable 值必须用引号包住，metadata-action 才认
+            type=raw,value=latest,enable="{{is_default_branch}}"
             type=sha,format=short,prefix=main
             # git tag (v0.1.0) → :0.1.0, :0.1, :latest
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_tag}}
+            type=raw,value=latest,enable="{{is_tag}}"
           labels: |
             org.opencontainers.image.title=Crawler Panel
             org.opencontainers.image.description=1mei.live 采集管理面板
