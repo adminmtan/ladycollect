@@ -1,9 +1,8 @@
 services:
   app:
-    # 镜像：从 GHCR 拉取（GitHub Container Registry，跟仓走，不需另注册）
+    # 镜像：从 Docker Hub 拉取（跟 .github/workflows/docker-publish.yml 里的 REGISTRY / IMAGE_NAME 对齐）
     # 升级：改 IMAGE_TAG 环境变量后 docker compose pull && up -d
-    # 首次拉取若提示未登录：echo $GITHUB_TOKEN | docker login ghcr.io -u adminmtan --password-stdin
-    image: ${IMAGE:-ghcr.io/adminmtan/ladycollect}:${IMAGE_TAG:-latest}
+    image: ${IMAGE:-adminmtan/ladycollect}:${IMAGE_TAG:-latest}
     restart: unless-stopped
     container_name: crawler-panel
     ports:
