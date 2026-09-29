@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/auth'
 const routes = [
   // 公开页（无侧栏布局）
   { path: '/login', component: () => import('@/views/LoginView.vue'), name: 'login', meta: { public: true, layout: 'blank' } },
+  { path: '/change-password', component: () => import('@/views/ChangePasswordView.vue'), name: 'change-password', meta: { layout: 'blank' } },
   // 应用页（带侧栏布局）
   { path: '/', component: () => import('@/views/DashboardView.vue'), name: 'dashboard' },
   { path: '/sites', component: () => import('@/views/SitesView.vue'), name: 'sites' },
@@ -54,6 +55,13 @@ router.beforeEach(async (to) => {
     } catch (e) {
       auth.clear()
       return { path: '/login', query: { next: to.fullPath } }
+    }
+  }
+  // 强制改密：除非已在改密页本身，否则踢过去
+  if (auth.user?.must_change_password && to.name !== 'change-password') {
+    return {
+      path: '/change-password',
+      query: { forced: '1', next: to.fullPath !== '/change-password' ? to.fullPath : '/' },
     }
   }
   return true
