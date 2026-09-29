@@ -12,6 +12,9 @@ env:
   REGISTRY: docker.io
   # Docker Hub 镜像名 = <hub user>/<repo>，默认 root namespace 即可
   IMAGE_NAME: adminmtan/ladycollect
+  # 调试期间展开 BuildKit 全部输出，让 GitHub 日志能看到 pip 的真实 stderr
+  BUILDKIT_PROGRESS: plain
+  PROGRESS_NO_TRUNC: 1
 
 jobs:
   build-and-push:
@@ -24,6 +27,42 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      # ============================================================
+      # DEBUG: 预跑一次 pip install，把完整 stderr 上传 artifact
+      # 这样 build 失败时能从公开仓库下载看到 pip 的真实报错
+      # ============================================================
+      - name: Debug — reproduce pip install
+        if: always()
+        run: |
+          set -x
+          docker run --rm \
+            -v "${{ github.workspace }}:/app" \
+            -w /app \
+            python:3.12-slim \
+            bash -c '
+              apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends \
+                python3-pip gcc libffi-dev libssl-dev libxml2-dev libxslt1-dev \
+                libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+                libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
+                libpango-1.0-0 libcairo2 libasound2 libxshmfence1 >/dev/null 2>&1
+              echo "==== pip install -e . ===="
+              pip install --no-cache-dir --break-system-packages -e . 2>&1 | tee /tmp/pip-debug.log
+              echo "==== exit=$? ===="
+            ' > /tmp/pip-debug.log 2>&1 || true
+          echo "--- last 80 lines of pip-debug.log ---"
+          tail -n 80 /tmp/pip-debug.log
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: 1
+
+      - name: Upload debug log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-debug-log
+          path: /tmp/pip-debug.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Log in to Docker Hub
         if: github.event_name != 'pull_request'
