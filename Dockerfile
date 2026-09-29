@@ -57,8 +57,9 @@ WORKDIR /app
 # 只先拷 manifest，最大化依赖层缓存
 COPY pyproject.toml ./
 # 主体依赖；cloakbrowser 已移除（依赖图冲突 + resolver 触发 maturin 构建失败）。
-RUN pip install --no-cache-dir --break-system-packages -e . 2>&1 | tail -200 ; \
-    echo "==== pip install exit=${PIPESTATUS[0]} ====" ; \
+# 不再 | tail -200：之前在 buildx 里报 "tail: invalid option" exit 2；
+# buildx 会自己捕获 step 输出并渲染，依赖全靠 cache 层复用。
+RUN pip install --no-cache-dir --break-system-packages -e . && \
     rm -rf /root/.cache /tmp/*.whl
 
 # 后端源码（高频改动层）
