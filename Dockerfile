@@ -83,7 +83,7 @@ RUN mkdir -p /app/backend/app/static && \
     rm -rf /app/frontend-dist
 
 # 持久化目录
-RUN mkdir -p /app/data /app/data/profile /app/data/logs /app/data/logs/archive /app/data/logs /app/data/logs/archive
+RUN mkdir -p /app/data /app/data/profile /app/data/logs /app/data/logs/archive
 
 # 入口
 COPY docker-entrypoint.sh /usr/local/bin/

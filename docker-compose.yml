@@ -6,9 +6,15 @@ services:
     image: ${IMAGE:-ghcr.io/adminmtan/ladycollect}:${IMAGE_TAG:-latest}
     # 每次 up 之前先去 registry 比对 digest，强制拉到最新。
     # 这样 `docker compose up -d` 就等于 `pull && up -d`。
+    # 注意：pull_policy: always 仅在 digest 不同时触发重新拉；本地镜像若 tag
+    # 名未变（latest 移动）也可能不拉。我们要求每次显式 `pull` 命令。
+    # 推荐用户命令：docker compose pull && docker compose up -d --force-recreate
     pull_policy: always
     restart: unless-stopped
     container_name: crawler-panel
+    init: true
+    # 阻止旧容器停止后匿名卷被自动清理（保留 .jwt_secret / .admin_password.txt 之类的临时文件）
+    stop_grace_period: 30s
     ports:
       - "${APP_PORT:-8080}:8080"
     volumes:
