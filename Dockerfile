@@ -57,10 +57,18 @@ WORKDIR /app
 # 只先拷 manifest，最大化依赖层缓存
 COPY pyproject.toml ./
 # 主体依赖；cloakbrowser 已移除（依赖图冲突 + resolver 触发 maturin 构建失败）。
-# 不再 | tail -200：之前在 buildx 里报 "tail: invalid option" exit 2；
-# buildx 会自己捕获 step 输出并渲染，依赖全靠 cache 层复用。
-RUN pip install --no-cache-dir --break-system-packages -e . && \
-    rm -rf /root/.cache /tmp/*.whl
+# 不再 | tail：把 stdout/stderr 落到文件再 tail，避免 buildx 把完整 stderr 截断。
+# set -o pipefail 让 BUILD 失败时 exit != 0。
+RUN set -o pipefail ; \
+    pip install --no-cache-dir --break-system-packages -e . > /tmp/pip.out 2> /tmp/pip.err ; \
+    rc=$? ; \
+    echo "==== pip install exit=$rc ====" ; \
+    echo "==== last 200 lines of stdout ====" ; \
+    tail -n 200 /tmp/pip.out ; \
+    echo "==== last 200 lines of stderr ====" ; \
+    tail -n 200 /tmp/pip.err ; \
+    rm -rf /root/.cache /tmp/*.whl /tmp/pip.out /tmp/pip.err ; \
+    exit $rc
 
 # 后端源码（高频改动层）
 COPY backend ./backend
