@@ -35,34 +35,30 @@ jobs:
       - name: Debug — reproduce pip install
         if: always()
         run: |
-          set -x
+          set +e
+          echo "===== START DEBUG PIP INSTALL ====="
           docker run --rm \
             -v "${{ github.workspace }}:/app" \
             -w /app \
             python:3.12-slim \
             bash -c '
-              apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends \
+              echo "==== apt install system deps ===="
+              apt-get update 2>&1 | tail -5
+              apt-get install -y --no-install-recommends \
                 python3-pip gcc libffi-dev libssl-dev libxml2-dev libxslt1-dev \
                 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
                 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
-                libpango-1.0-0 libcairo2 libasound2 libxshmfence1 >/dev/null 2>&1
+                libpango-1.0-0 libcairo2 libasound2 libxshmfence1 2>&1 | tail -5
+              echo "==== python version ===="
+              python3 --version
               echo "==== pip install -e . ===="
-              pip install --no-cache-dir --break-system-packages -e . 2>&1 | tee /tmp/pip-debug.log
+              pip install --no-cache-dir --break-system-packages -e . 2>&1 | tail -120
               echo "==== exit=$? ===="
-            ' > /tmp/pip-debug.log 2>&1 || true
-          echo "--- last 80 lines of pip-debug.log ---"
-          tail -n 80 /tmp/pip-debug.log
+              echo "==== END ===="
+            '
+          echo "===== END DEBUG ====="
         env:
           PIP_DISABLE_PIP_VERSION_CHECK: 1
-
-      - name: Upload debug log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pip-debug-log
-          path: /tmp/pip-debug.log
-          if-no-files-found: ignore
-          retention-days: 7
 
       - name: Log in to Docker Hub
         if: github.event_name != 'pull_request'
