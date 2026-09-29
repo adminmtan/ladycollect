@@ -21,7 +21,7 @@ RUN npm run build
 # 不在这里装，保持镜像小。在 runtime stage 内统一安装。
 
 # ---------- 3) 运行时镜像 ----------
-FROM cloakhq/cloakbrowser:latest
+FROM python:3.12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -31,10 +31,25 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_ROOT_USER_ACTION=ignore \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# 系统依赖 + Python
+# 系统依赖：Python + Chromium 运行库（cloakbrowser/playwright 需要）+ 编译工具链
+# 复制自 cloakhq/cloakbrowser Dockerfile 外加构建依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv \
         curl ca-certificates \
+        # Chromium 运行依赖
+        libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+        libdbus-1-3 libdrm2 libxkbcommon0 libatspi2.0-0 libxcomposite1 \
+        libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 \
+        libcairo2 libasound2 libx11-xcb1 libfontconfig1 libx11-6 \
+        libxcb1 libxext6 libxshmfence1 \
+        libglib2.0-0 libgtk-3-0 libpangocairo-1.0-0 libcairo-gobject2 \
+        libgdk-pixbuf-2.0-0 libxss1 libxtst6 fonts-liberation \
+        fonts-noto-color-emoji fonts-unifont fonts-freefont-ttf \
+        fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf \
+        fonts-urw-base35 \
+        xvfb xdotool openbox \
+        # C 扩展编译（兜底，万一 wheel 不齐）
+        gcc libffi-dev libssl-dev libxml2-dev libxslt1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
