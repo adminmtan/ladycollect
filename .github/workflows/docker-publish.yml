@@ -33,9 +33,8 @@ jobs:
       # 这样 build 失败时能从公开仓库下载看到 pip 的真实报错
       # ============================================================
       - name: Debug — reproduce pip install
-        if: always()
+        continue-on-error: true
         run: |
-          set +e
           echo "===== START DEBUG PIP INSTALL ====="
           docker run --rm \
             -v "${{ github.workspace }}:/app" \
@@ -54,11 +53,8 @@ jobs:
               echo "==== last 200 of stderr ===="
               tail -n 200 /tmp/pip.err
               echo "==== END ===="
-              exit $rc
             '
-          rc=$?
-          echo "===== END DEBUG exit=$rc ====="
-          exit $rc
+          echo "===== END DEBUG ====="
         env:
           PIP_DISABLE_PIP_VERSION_CHECK: 1
 
