@@ -62,6 +62,14 @@ WORKDIR /app
 # 决定 pip install 层的 cache key，backend 内容变更只影响这一层。
 COPY pyproject.toml ./
 COPY backend ./backend
+# 注入版本元数据（运行时通过 envvars 读，/api/health 返回）
+# APP_VERSION / GIT_SHA / BUILT_AT 由 GH Actions 通过 --build-arg 传入
+ARG APP_VERSION=dev
+ARG GIT_SHA=unknown
+ARG BUILT_AT=unknown
+ENV APP_VERSION=${APP_VERSION} \
+    GIT_SHA=${GIT_SHA} \
+    BUILT_AT=${BUILT_AT}
 # 主体依赖；cloakbrowser 已移除（依赖图冲突 + resolver 触发 maturin 构建失败）。
 # 把 stdout/stderr 落到文件再 tail，避免 buildx 把完整 stderr 截断。
 # set -o pipefail + exit $rc 让 BUILD 失败时 exit != 0。

@@ -124,7 +124,14 @@ app.include_router(auth_api.router)
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.1.0"}
+    """健康检查 + 镜像版本（用于诊断"是不是最新的"）"""
+    from app.version import APP_VERSION, GIT_SHA, BUILT_AT
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "git_sha": GIT_SHA,
+        "built_at": BUILT_AT,
+    }
 
 
 # 前端静态资源（Vite build 输出）

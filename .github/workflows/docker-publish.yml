@@ -41,8 +41,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            # main 分支：latest + 不可变 main-<sha>（便于精确回滚）
             type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-            type=sha,format=short,prefix=main
+            type=sha,format=long,prefix=main-
+            # semver tag 触发（如 v0.1.0）→ 打 v0.1.0 + latest
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
@@ -63,12 +65,24 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            APP_VERSION=main-${{ github.sha }}
+            GIT_SHA=${{ github.sha }}
+            BUILT_AT=${{ github.event.head_commit.timestamp }}
 
       - name: Image digest summary
         if: github.event_name != 'pull_request'
         run: |
-          echo "已推送：${{ steps.meta.outputs.tags }}"
+          echo "=========================================="
+          echo " 已推送镜像"
+          echo "=========================================="
+          echo "Tags：${{ steps.meta.outputs.tags }}"
           echo "Digest：${{ steps.meta.outputs.digest }}"
           echo ""
-          echo "在 NAS 上拉取命令："
-          echo "  docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "Commit：${{ github.sha }}"
+          echo ""
+          echo "=========================================="
+          echo " NAS 上精确拉取命令（按 SHA，永不歧义）"
+          echo "=========================================="
+          echo "  docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-${{ github.sha }}"
+          echo "  docker compose pull && IMAGE_TAG=main-${{ github.sha }} docker compose up -d --force-recreate"

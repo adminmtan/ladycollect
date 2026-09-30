@@ -2,13 +2,18 @@ services:
   app:
     # 镜像：从 GitHub Container Registry 拉取（免登录可见的 public 仓库）
     # 想拉私有镜像请先 docker login ghcr.io
-    # 升级：改 IMAGE_TAG 环境变量后 docker compose pull && up -d
+    #
+    # 版本管理：GH Actions 在 main 分支推不可变 tag: main-<40位 sha>
+    # 升级方式（推荐，可精确回滚）：
+    #   export IMAGE_TAG=main-ac03820abcdef...   # 在 GH Actions summary 复制
+    #   docker compose pull && docker compose up -d --force-recreate
+    #
+    # 或者继续用 latest（自动跟随 main 最新构建）：
+    #   docker compose pull && docker compose up -d --force-recreate
+    #
+    # ⚠️ 仅 `docker compose up -d` 不会触发 pull（v2 默认 pull_policy=missing）
+    # ⚠️ 即使 latest 已更新，本地镜像缓存也可能不刷新；加 --force-recreate 强制重建
     image: ${IMAGE:-ghcr.io/adminmtan/ladycollect}:${IMAGE_TAG:-latest}
-    # 每次 up 之前先去 registry 比对 digest，强制拉到最新。
-    # 这样 `docker compose up -d` 就等于 `pull && up -d`。
-    # 注意：pull_policy: always 仅在 digest 不同时触发重新拉；本地镜像若 tag
-    # 名未变（latest 移动）也可能不拉。我们要求每次显式 `pull` 命令。
-    # 推荐用户命令：docker compose pull && docker compose up -d --force-recreate
     pull_policy: always
     restart: unless-stopped
     container_name: crawler-panel
