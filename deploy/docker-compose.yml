@@ -1,0 +1,69 @@
+name: ladycollect
+
+services:
+  app:
+    image: ghcr.io/adminmtan/ladycollect:latest
+    container_name: ladycollect
+    restart: unless-stopped
+    labels:
+      # 允许 watchtower 自动更新这个容器
+      com.enable.watchtower: "true"
+    ports:
+      # NAS 上把 8088 暴露给局域网访问；按需改
+      - "8088:8000"
+    volumes:
+      # SQLite + 上传文件 + profile_cloak 都挂载到 /data
+      # 用 bind mount 而不是 named volume —— 备份/迁移直接拷目录就行
+      - ./data:/data
+    environment:
+      # 从 .env 文件注入
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      - TZ=${TZ:-Asia/Shanghai}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # 让容器内的 SQLite / 上传走持久化目录
+      - DATA_DIR=/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400      # 24h 查一次
+      - WATCHTOWER_INCLUDE_STOPPED=false
+      - WATCHTOWER_TIMEOUT=120s
+      # Watchtower 监控的 registry（默认 docker hub）
+      # ghcr.io 已经包含在默认 registry 列表
+    command: --label-enable
+
+  # 可选：GHCR 私有镜像的认证 helper
+  # 如果你的 GHCR 镜像设成了 private，取消下面注释，并在 .env 填 GHCR_USERNAME/GHCR_TOKEN
+  #
+  # docker-auth:
+  #   image: docker.io/library/docker:27-cli
+  #   container_name: docker-auth
+  #   entrypoint: ["sh", "-c"]
+  #   command:
+  #     - |
+  #       echo "$$GHCR_TOKEN" | docker login ghcr.io -u "$$GHCR_USERNAME" --password-stdin && \
+  #       echo "GHCR login OK, sleeping..."
+  #       sleep infinity
+  #   environment:
+  #     - GHCR_USERNAME=${GHCR_USERNAME}
+  #     - GHCR_TOKEN=${GHCR_TOKEN}
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
