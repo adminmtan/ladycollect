@@ -24,7 +24,7 @@ G="\033[0;32m"; Y="\033[1;33m"; R="\033[0;31m"; N="\033[0m"
 # ---------- 1. 拿当前运行版本 ----------
 echo -e "${Y}== 当前版本 ==${N}"
 BEFORE_SHA=$(docker inspect crawler-panel --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || echo "unknown")
-BEFORE_TAG=$(docker inspect crawler-panel --format '{{index .Config.Labels "org.opencontainers.image.title"}}' 2>/dev/null || echo "unknown")
+echo "  revision: $BEFORE_SHA"
 curl -fsS http://localhost:8080/api/health 2>/dev/null | python3 -m json.tool 2>/dev/null | sed 's/^/  /' || echo "  (容器未运行)"
 echo ""
 
