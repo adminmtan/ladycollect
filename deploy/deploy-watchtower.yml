@@ -1,0 +1,23 @@
+# 仅在 NAS 上**用 SSH 命令行**跑 docker compose 时使用。
+# 群晖 Container Manager (DSM7 GUI) 的 Yaml 校验不允许 labels 顶级键，
+# 所以 watchtower 必须放到独立的 compose 文件里。
+#
+# 用法 (NAS 上 ssh 后):
+#   docker compose -f /volume1/docker/apps/ladycollect/deploy-watchtower.yml up -d
+# 一次跑完即可，每天自动检查 ghcr.io 是否有新 :latest 镜像并重启 app 容器。
+
+services:
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - TZ=Asia/Shanghai
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400      # 24 小时查一次
+      - WATCHTOWER_INCLUDE_STOPPED=false
+      - WATCHTOWER_TIMEOUT=120s
+    command: --label-enable

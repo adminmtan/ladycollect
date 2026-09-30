@@ -5,9 +5,8 @@ services:
     image: ghcr.io/adminmtan/ladycollect:latest
     container_name: ladycollect
     restart: unless-stopped
-    labels:
-      # 允许 watchtower 自动更新这个容器
-      com.enable.watchtower: "true"
+    # 不要用 labels 字段 —— 群晖 Container Manager 拒绝非白名单字段。
+    # 想自动更新在 NAS 上单跑 watchtower（看 deploy/nas-watchtower.yml）
     ports:
       # NAS 上把 8088 暴露给局域网访问；按需改
       - "8088:8000"
@@ -25,7 +24,7 @@ services:
       # 让容器内的 SQLite / 上传走持久化目录
       - DATA_DIR=/data
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8000/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
