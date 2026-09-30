@@ -5,19 +5,18 @@
 #   bash scripts/update.sh                # 默认拉取 GitHub Actions 最近成功的 main commit
 #   bash scripts/update.sh ac03820        # 指定 commit 前缀
 #   bash scripts/update.sh v0.1.0         # 指定 semver tag
+#   IMAGE_TAG=main-ac03820... bash scripts/update.sh
 #
 # 流程：
 #   1) 拉目标 tag
-#   2) docker compose down
-#   3) IMAGE_TAG=<target> docker compose up -d --force-recreate
-#   4) 等待健康检查通过
-#   5) 打印前后版本对比
+#   2) IMAGE_TAG=<target> docker compose up -d --force-recreate
+#   3) 等待健康检查通过
+#   4) 打印前后版本对比
 
 set -euo pipefail
 
 REPO="ghcr.io/adminmtan/ladycollect"
-TARGET="${1:-latest}"
-IMAGE="docker.io/library/alpine:3"   # 占位镜像，docker pull 测试用
+TARGET="${1:-${IMAGE_TAG:-latest}}"
 
 # 颜色
 G="\033[0;32m"; Y="\033[1;33m"; R="\033[0;31m"; N="\033[0m"
@@ -38,8 +37,7 @@ case "$TARGET" in
         TAG="$TARGET"
         ;;
     [0-9a-f]*)
-        # commit 前缀，补全为 main-<short 或 long>
-        # 优先查 main-<完整 sha>，找不到就 main-<short>
+        # commit 前缀，补全为 main-<完整 sha>
         SHA_FULL=$(curl -fsSL "https://api.github.com/repos/adminmtan/ladycollect/commits?sha=main&per_page=1" 2>/dev/null \
             | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['sha'])" 2>/dev/null || echo "")
         if [ -z "$SHA_FULL" ]; then
