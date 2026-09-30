@@ -1,0 +1,31 @@
+# 群晖 Container Manager (DSM7) 兼容版 Yaml
+# 限制：
+#   - 不能用顶级 `name:` / `labels:`
+#   - 不用 `:?xxx` 错误语法（GUI 不解析 bash 变量语法）
+#   - volume 必须绝对路径
+#   - 不使用 healthcheck（避免被部分版本拒绝）
+#   - watchtower 不放这个文件（独立走 SSH 启动，避免 GUI 校验）
+#
+# 部署方法：
+#   1. Container Manager → 项目 → 新建 → 选这份 yml
+#   2. 项目设置里填环境变量 (JWT_SECRET / ADMIN_PASSWORD)
+#   3. 路径: /volume1/docker/apps/ladycollect
+
+services:
+  app:
+    image: ghcr.io/adminmtan/ladycollect:latest
+    container_name: ladycollect
+    restart: unless-stopped
+    ports:
+      - "5080:8000"
+    volumes:
+      # 用绝对路径，bind mount 数据到 NAS 物理目录
+      - /volume1/docker/apps/ladycollect/data:/data
+    environment:
+      # 这里只引用变量，**实际值**在 Container Manager 项目设置里填
+      - JWT_SECRET=${JWT_SECRET}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - TZ=Asia/Shanghai
+      - LOG_LEVEL=INFO
+      - DATA_DIR=/data
