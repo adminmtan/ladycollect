@@ -70,18 +70,25 @@ ARG BUILT_AT=unknown
 ENV APP_VERSION=${APP_VERSION} \
     GIT_SHA=${GIT_SHA} \
     BUILT_AT=${BUILT_AT}
-# 主体依赖；cloakbrowser 已移除（依赖图冲突 + resolver 触发 maturin 构建失败）。
+# 主体依赖；cloakbrowser 用 --no-deps 单独装（依赖图冲突 + resolver 触发 maturin 构建失败）
+# 详见 commit e205047 / 46ab4db。
 # 把 stdout/stderr 落到文件再 tail，避免 buildx 把完整 stderr 截断。
 # set -o pipefail + exit $rc 让 BUILD 失败时 exit != 0。
 RUN set -o pipefail ; \
     pip install --no-cache-dir --break-system-packages -e . > /tmp/pip.out 2> /tmp/pip.err ; \
     rc=$? ; \
-    echo "==== pip install exit=$rc ====" ; \
-    echo "==== last 200 lines of stdout ====" ; \
-    tail -n 200 /tmp/pip.out ; \
-    echo "==== last 200 lines of stderr ====" ; \
-    tail -n 200 /tmp/pip.err ; \
+    echo "==== main deps pip install exit=$rc ====" ; \
+    tail -n 50 /tmp/pip.err ; \
     rm -rf /root/.cache /tmp/*.whl /tmp/pip.out /tmp/pip.err ; \
+    exit $rc
+
+# cloakbrowser 装在最后，--no-deps 复用上面已装的 cryptography/playwright，避免 resolver 冲突
+RUN set -o pipefail ; \
+    pip install --no-cache-dir --break-system-packages --no-deps cloakbrowser > /tmp/cloak.out 2> /tmp/cloak.err ; \
+    rc=$? ; \
+    echo "==== cloakbrowser pip install exit=$rc ====" ; \
+    tail -n 50 /tmp/cloak.err ; \
+    rm -rf /root/.cache /tmp/*.whl /tmp/cloak.out /tmp/cloak.err ; \
     exit $rc
 
 # 前端产物（来自 stage 1）拷到 backend 的 static 目录，让 FastAPI 直接挂载。

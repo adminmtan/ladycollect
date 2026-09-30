@@ -49,6 +49,54 @@ def _clean_keyword(kw: str) -> str:
     return k
 
 
+def _extract_structured_tokens(title: str) -> list[str]:
+    """从单标题里提取结构化 token:
+    - [xxx] 方括号标签 (题材/分区, 如 [国产无码])
+    - 【xxx】 书名号 (人物/系列, 如 【杀手蛇蛇】)
+    返回时去掉方括号本身.
+    过滤掉纯数字+容量标签 (如 14V/8.9G, 1080P, 714P/355M, 21V 等).
+    """
+    out: list[str] = []
+    _JUNK_RE = re.compile(r"^[\d\.\-/vVmMgGbBpP]+$")
+    for m in re.finditer(r"\[([^\]]{2,30})\]", title):
+        v = m.group(1).strip()
+        if not v:
+            continue
+        if _JUNK_RE.match(v):  # 纯数字 / 容量规格
+            continue
+        if v not in out:
+            out.append(v)
+    for m in re.finditer(r"【([^】]{2,30})】", title):
+        v = m.group(1).strip()
+        # 过滤掉 "最新/高清/完结/中字" 这种通用词
+        if v and v not in out and not any(sw in v for sw in ("最新", "无水印", "高清", "完结", "中字", "无码")):
+            out.append(v)
+    return out
+
+
+def _filter_overlapping_ngrams(tokens: list[str]) -> list[str]:
+    """去掉中文 n-gram 切碎的错位重叠子串.
+    例: ['国产无码','产无码萝','无码萝御'] -> 只保留最长的 '国产无码'.
+
+    规则: 对每个 token k, 若存在另一个更长 token long (|long|>|k|),
+    k 的字符集 ⊆ long 的字符集 且 k 的字符数 ≥ long 一半, 则视为重叠冗余.
+    """
+    out: list[str] = []
+    for k in tokens:
+        k_chars = set(k)
+        is_overlap = False
+        for existing in out:
+            if len(existing) <= len(k):
+                continue
+            e_chars = set(existing)
+            if k_chars <= e_chars and len(k) >= len(existing) / 2:
+                is_overlap = True
+                break
+        if not is_overlap:
+            out.append(k)
+    return out
+
+
 class LocalKeywordExtractor:
     """本地规则关键词提取器（无外部依赖）
 
@@ -144,6 +192,13 @@ class LocalKeywordExtractor:
             if len(out) >= top_n:
                 break
 
+        # ★ 单标题场景: n-gram 切碎会输出大量重叠子串 (例如 「国产无码」「产无码萝」「无码萝御」...),
+        # 用户看到「AI 没分析」。补救: 只输出结构化 token ([xxx] 【xxx】), 跳过 n-gram.
+        if len(titles) == 1 and titles[0]:
+            title = titles[0]
+            extracted = _extract_structured_tokens(title)
+            return extracted[:top_n]
+
         return out
 
 
@@ -153,15 +208,42 @@ class AIKeywordExtractor:
     通过 OPENAI_BASE_URL + OPENAI_API_KEY + OPENAI_MODEL 调用。
     """
 
-    EXTRACT_PROMPT = """你是一个「关键词过滤规则提取助手」。
+    SYSTEM_PROMPT = """你是一名「中文视频网站过滤关键词提取助手」。
+系统会用「标题是否包含该关键词」的子串匹配来过滤帖子。
+你必须遵守：
 
-用户连续标记了以下帖子为「{action_label}」，请分析它们共有的、能区分这一类帖子的关键特征词。
+【格式】
+- 严格每行一个关键词
+- 不要编号、不要解释、不要其他文字
+- 不要 Markdown 代码块
+
+【长度】
+- 关键词最少 2 个字符（单字无意义，会被滤掉）
+- 建议 3-12 个字符
+
+【优先级：先输出最有区分度的】
+1. 题材/分区标签（如「国产无码」「日本有码」「AI国语短剧」「ASMR」）
+2. 系列名/作品名（如「美丽新世界」「杀手蛇蛇」）
+3. 演员/作者/品牌名（如「yoonying」「池甜」）
+4. 风格/特征词（如「擦边」「合集」）
+
+【必须避免】
+- 单字（"国"、"剧"、"人"等）
+- 通用品质词（「高清」「无水印」「完结」「中字」「1080p」「720p」）
+- 纯数字 / 集数 / 容量规格（如「14V」「8.9G」「1-14集」「714P」）
+- 标点片段（如「-」「/」「[」）
+- 量词（「第一集」「第二弹」）
+- 时间词（「2025」「2026」「10月」）
+"""
+
+    EXTRACT_PROMPT = """用户刚刚把以下帖子标记为「{action_label}」。
+
+请提取出 {top_n} 个能用作过滤关键词的字符串，能把这一类帖子都识别出来。
 
 要求：
-1. 输出 3-{top_n} 个能用作过滤关键词的字符串（中英文都行）
-2. 优先输出：演员名/系列名/题材标签/品牌/风格词/数字编号
-3. 避免：通用词（高清/无码/1080p/中字 等）、单字、量词
-4. 严格只输出「每行一个关键词」，不要编号、不要解释、不要其他文字
+- 关键词是「子串匹配」，标题里出现该关键词就算命中
+- 优先输出完整标签（如「国产无码」整体，不要拆成「国产」+「无码」）
+- 完整标签命中更精准，避免输出过短导致误伤
 
 {action_label}的标题列表：
 {titles_block}
@@ -222,7 +304,7 @@ class AIKeywordExtractor:
             req_body = _json.dumps({
                 "model": self.model,
                 "messages": [
-                    {"role": "system", "content": "你只输出关键词列表，每行一个，不要其他文字。"},
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.2,

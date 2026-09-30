@@ -16,13 +16,15 @@ from app.api import posts, sites, stats, tasks, filter_rules, feedback
 from app.api import auth as auth_api
 from app.api import settings as settings_api
 from app.auth import is_public_path
-from app.config import settings
+from app.config import ROOT_DIR, settings
 from app.db import init_db
 from app.logging_setup import setup_logging
 
 # 必须在任何 logger.info 之前调用，确保所有日志走文件 + stderr 双通道
+# 优先用 LOGS_DIR 环境变量覆盖；未设则：容器内 /app/data/logs，本地 ./data/logs
+_LOGS_DIR = Path(os.environ.get("LOGS_DIR") or ("/app/data/logs" if os.path.isdir("/app") else str(ROOT_DIR / "data" / "logs")))
 LOGS_DIR = setup_logging(
-    logs_dir=Path("/app/data/logs"),
+    logs_dir=_LOGS_DIR,
     level=settings.log_level,
     max_bytes=int(os.environ.get("LOG_MAX_BYTES", 20 * 1024 * 1024)),
     backup_count=int(os.environ.get("LOG_BACKUP_COUNT", 5)),

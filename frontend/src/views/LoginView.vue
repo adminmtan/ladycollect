@@ -87,15 +87,17 @@
               placeholder="例如 admin"
               autocomplete="username"
               size="large"
+              class="login-input"
             />
           </el-form-item>
 
           <el-form-item label="账号" v-if="mode === 'login'" prop="username">
             <el-input
               v-model="form.username"
-              placeholder="admin"
+              placeholder="请输入用户名"
               autocomplete="username"
               size="large"
+              class="login-input"
             />
           </el-form-item>
 
@@ -107,6 +109,7 @@
               :placeholder="mode === 'setup' ? '至少 8 位，建议混合大小写+符号' : '请输入密码'"
               :autocomplete="mode === 'setup' ? 'new-password' : 'current-password'"
               size="large"
+              class="login-input"
             />
             <span v-if="mode === 'setup'" class="field-hint">
               <el-icon><View /></el-icon>
@@ -131,12 +134,13 @@
 
           <p v-if="hint" class="hint" :class="hintType">{{ hint }}</p>
 
-          <!-- 底部小提示：Docker 首次密码从哪看 -->
+          <!-- 底部小提示：Docker 首次密码从哪看 + 一键填默认账号 -->
           <div v-if="mode === 'login'" class="docker-hint">
             <span class="dot" />
             <span>
               Docker 首次启动？默认账号 <strong>admin</strong>，密码在该容器
               <code>docker logs &lt;container&gt;</code> 输出中可见一次。
+              <a class="quick-fill" @click.prevent="fillDefault">一键填默认账号</a>
             </span>
           </div>
         </el-form>
@@ -459,7 +463,10 @@ async function submit() {
 }
 
 .login-form :deep(.el-input__inner::placeholder) {
-  color: var(--color-muted-foreground);
+  color: rgba(148, 163, 184, 0.42);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: 0.2px;
 }
 
 .field-hint {

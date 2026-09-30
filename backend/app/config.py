@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     default_request_timeout: int = Field(default=30)
 
     # 浏览器配置目录
-    profile_dir: Path = Field(default=DATA_DIR / "profile")
+    profile_dir: Path = Field(default=DATA_DIR / "profile_cloak")
 
     # AI 关键词提取（OpenAI 兼容 API；留空则降级到本地规则提取）
     openai_base_url: str = Field(default="https://api.openai.com/v1")

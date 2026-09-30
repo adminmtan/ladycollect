@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import logging
+import os
 
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import settings
 
@@ -285,15 +286,73 @@ def init_db() -> None:
                     enabled=True,
                 ))
                 s.commit()
+                existing = s.exec(select(User).where(User.username == "admin")).first()
                 logger.warning(
                     "已创建占位 admin 用户（password_hash=!UNINITIALIZED!）。"
                     "Docker 模式：entrypoint.sh 会生成强随机密码并打到日志。"
                     "本地开发模式：先 POST /api/auth/setup 初始化密码。"
                 )
+
+            # 本地（非 docker）直接生成本地 dev 密码，避免用户必须先 curl /api/auth/setup 才能登录。
+            # 触发条件：admin 用户的 password_hash 仍是占位（首次启动 / 用户从未初始化过）。
+            # 容器内 /app 存在时跳过这段，由 docker-entrypoint.sh 负责。
+            import os as _os
+            if not _os.path.isdir("/app") and existing is not None and existing.password_hash.startswith("!UNINITIALIZED!"):
+                try:
+                    from app.api.auth import generate_strong_password
+                    from app.auth import hash_password as _hp
+                    plain = generate_strong_password(14)
+                    existing.password_hash = _hp(plain)
+                    existing.must_change_password = True
+                    s.add(existing)
+                    s.commit()
+                    # 单独用 root logger 打一醒目的 banner，便于用户从 start.sh 的 stderr 中复制
+                    logging.getLogger().info(
+                        "\n================================================================\n"
+                        "  [本地 dev 模式] 已生成 admin 初始密码：%s\n"
+                        "  访问 http://localhost:%s/login，用 admin + 上面密码登录。"
+                        "  （生产容器由 docker-entrypoint.sh 处理，不会走这段）\n"
+                        "================================================================",
+                        plain,
+                        _os.environ.get("APP_PORT", "8080"),
+                    )
+                except Exception as _e:  # pragma: no cover
+                    logger.warning("本地初始化 admin 密码失败（可忽略，仍可走 /api/auth/setup）：%s", _e)
     except Exception as e:  # pragma: no cover
         logger.warning("users 表迁移跳过：%s", e)
+
+    # 清理 stale running jobs：进程重启/崩溃后，DB 仍 status='running' 但采集线程已死。
+    # 启动时把超过 STALE_JOB_MINUTES 还没结束的 job 标为 cancelled（避免「停止按钮没作用」假象）。
+    try:
+        from datetime import datetime, timedelta, timezone as _tz
+        stale_minutes = int(os.environ.get("STALE_JOB_MINUTES", "30"))
+        cutoff = datetime.now(_tz.utc) - timedelta(minutes=stale_minutes)
+        with Session(engine) as s:
+            stale = s.exec(
+                select(Job).where(Job.status == "running", Job.started_at < cutoff)
+            ).all()
+            for j in stale:
+                j.status = "cancelled"
+                j.error = j.error or "采集进程已退出（stale cleanup）"
+                j.finished_at = datetime.now(_tz.utc)
+                s.add(j)
+                _append_log_safe(j, "⛔ 采集进程已退出，状态自动标记为 cancelled（stale cleanup）", s)
+                s.commit()
+                logger.warning("stale job cleanup: job_id=%s 已标 cancelled", j.id)
+    except Exception as e:  # pragma: no cover
+        logger.warning("stale job cleanup 跳过：%s", e)
 
 
 def get_session() -> Session:
     """FastAPI 依赖：每次请求一个 Session"""
     return Session(engine)
+
+
+def _append_log_safe(job, msg: str, session: Session) -> None:
+    """不依赖 logger 的轻量日志写入（用于 stale cleanup 这类启动期操作）"""
+    try:
+        from app.models import JobLog
+        session.add(JobLog(job_id=job.id, ts=datetime.now(_tz.utc), msg=msg))
+        session.commit()
+    except Exception:
+        pass

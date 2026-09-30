@@ -260,6 +260,22 @@ a:hover {
   --el-text-color-regular: var(--color-muted-foreground);
   --el-text-color-secondary: var(--color-muted-foreground);
   border-radius: var(--radius-lg) !important;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 内容区下的卡片一律撑满 */
+.main-content .el-card {
+  width: 100%;
+  align-self: stretch;
+}
+.main-content .el-table {
+  width: 100% !important;
+}
+.main-content .el-table__inner-wrapper {
+  width: 100% !important;
+  min-width: 0 !important;
 }
 
 .el-table {

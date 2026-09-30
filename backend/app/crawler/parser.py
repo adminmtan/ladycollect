@@ -374,11 +374,29 @@ def parse_discuz_list_html(html_text: str, base_url: str) -> list[PostMeta]:
 
         # 作者 + 时间
         author = None
+        post_date: Optional[date_t] = None
         by_el = tr.select_one("td.by")
         if by_el:
             parts = [s.strip() for s in by_el.get_text("\n").splitlines() if s.strip()]
             if parts:
                 author = parts[0]
+
+            # Discuz! X3.4 列表页时间通常在 td.by 第二行：
+            #   <em><span title="2026-09-30 12:34">3 小时前</span></em>
+            # 或纯文本 "2026-9-30"。先取 span[title]（ISO 精确），再 fallback 到 span 文本，
+            # 最后 fallback 到 td.by 第二行纯文本。
+            time_attr: Optional[str] = None
+            span_title = by_el.select_one("em span[title]")
+            if span_title and span_title.get("title"):
+                time_attr = span_title.get("title")
+            if not time_attr:
+                any_span = by_el.select_one("em span")
+                if any_span:
+                    time_attr = any_span.get_text(" ", strip=True)
+            if not time_attr and len(parts) >= 2:
+                time_attr = parts[1]
+            if time_attr:
+                post_date = _parse_relative_time(time_attr) or _parse_iso_date(time_attr)
 
         results.append(
             PostMeta(
@@ -389,7 +407,7 @@ def parse_discuz_list_html(html_text: str, base_url: str) -> list[PostMeta]:
                 author=author,
                 cover=None,
                 summary=None,
-                post_date=None,
+                post_date=post_date,
                 raw={"list_row": str(tr)[:300]},
             )
         )

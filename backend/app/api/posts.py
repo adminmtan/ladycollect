@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import date as date_t, datetime
 from typing import Optional
 
@@ -12,10 +13,11 @@ from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
 from app.config import settings as app_settings
-from app.crawler.browser import make_browser
+from app.crawler.browser import make_page
 from app.crawler.runner import _has_age_gate, _select_parsers, _force_browser, fetch_html
 from app.db import get_session
-from app.models import Job, Post, Site, Task, utcnow
+from app.learning import get_extractor
+from app.models import FilterKeyword, FilterRule, Job, Post, Site, Task, UserFeedback, utcnow
 from app.schemas import (
     CopyLinksRequest,
     CopyLinksResponse,
@@ -26,6 +28,12 @@ from app.schemas import (
     RecrawlRequest,
     RecrawlResponse,
 )
+from app.api.feedback import (
+    _get_or_create_default_rule,
+    _persist_keywords,
+    _record_feedback,
+)
+from app.crawler.runner import invalidate_filter_rules_cache
 
 router = APIRouter(prefix="/api/posts", tags=["posts"])
 
@@ -43,6 +51,36 @@ def _to_list(v) -> list[str]:
         except Exception:
             pass
     return []
+
+
+def _collect_all_exclude_keywords(session: Session) -> list[str]:
+    """聚合所有 enabled exclude 规则的关键词并集 (去重, 按字母排序)
+
+    用于 curate_preview 的 global mode: 把全站所有站点的过滤关键词聚合展示,
+    不创建/不修改任何规则, 仅作为只读候选.
+    """
+    rules = session.exec(
+        select(FilterRule).where(
+            FilterRule.enabled == True,  # noqa: E712
+            FilterRule.rule_type == "exclude",
+        )
+    ).all()
+    if not rules:
+        return []
+    rule_ids = [r.id for r in rules]
+    rows = session.exec(
+        select(FilterKeyword).where(FilterKeyword.rule_id.in_(rule_ids))
+    ).all()
+    seen: set[str] = set()
+    out: list[str] = []
+    for k in rows:
+        kw = (k.keyword or "").strip().lower()
+        if not kw or kw in seen:
+            continue
+        seen.add(kw)
+        out.append(kw)
+    out.sort()
+    return out
 
 
 @router.get("", response_model=PostPage)
@@ -407,53 +445,43 @@ def recrawl_posts(payload: RecrawlRequest, session: Session = Depends(get_sessio
         proxy = site.proxy or app_settings.proxy_url
         ua = site.user_agent or app_settings.default_user_agent
 
-        # 决定抓取方式
         if use_browser:
-            ctx_factory = lambda: make_browser(
+            ctx_factory = lambda: make_page(
                 headless=True,
-                humanize=False,
                 proxy=proxy,
                 user_agent=ua,
-                fingerprint_seed=site.fingerprint_seed,
                 profile_dir=app_settings.profile_dir,
             )
         else:
-            # 1mei 走纯 HTTP 即可（更稳更快）
             from app.crawler.http_client import fetch_html
-
             ctx_factory = None
 
         if ctx_factory is not None:
-            with ctx_factory() as ctx:
-                page = ctx.new_page()
-                # 先过 age gate（一次即可）：访问站点首页
+            with ctx_factory() as page:
                 try:
-                    page.goto(site.base_url, wait_until="domcontentloaded",
-                              timeout=app_settings.default_request_timeout * 1000)
-                    page.wait_for_timeout(1500)
+                    page.get(site.base_url, timeout=app_settings.default_request_timeout)
+                    time.sleep(1.5)
                     if _has_age_gate(page):
-                        page.locator("a.enter-btn").first.click(timeout=5000)
-                        page.wait_for_load_state("domcontentloaded",
-                                                 timeout=app_settings.default_request_timeout * 1000)
-                        page.wait_for_timeout(1500)
+                        btn = page.raw.ele("css:a.enter-btn")
+                        if btn:
+                            btn.click()
+                            time.sleep(2)
                 except Exception:
                     pass
 
                 for p in group:
                     try:
-                        page.goto(p.url, wait_until="domcontentloaded",
-                                  timeout=app_settings.default_request_timeout * 1000)
-                        page.wait_for_timeout(2000)
+                        page.get(p.url, timeout=app_settings.default_request_timeout)
+                        time.sleep(2)
                         if _has_age_gate(page):
-                            page.locator("a.enter-btn").first.click(timeout=5000)
-                            page.wait_for_load_state("domcontentloaded",
-                                                     timeout=app_settings.default_request_timeout * 1000)
-                            page.wait_for_timeout(1500)
-                            page.goto(p.url, wait_until="domcontentloaded",
-                                      timeout=app_settings.default_request_timeout * 1000)
-                            page.wait_for_timeout(2000)
-                        html = page.content()
-                        detail = detail_parser(html, site.base_url)
+                            btn = page.raw.ele("css:a.enter-btn")
+                            if btn:
+                                btn.click()
+                                time.sleep(2)
+                            page.get(p.url, timeout=app_settings.default_request_timeout)
+                            time.sleep(2)
+                        detail_html = page.html
+                        detail = detail_parser(detail_html, site.base_url)
 
                         changed = _apply_detail(p, detail)
                         if changed:
@@ -473,11 +501,11 @@ def recrawl_posts(payload: RecrawlRequest, session: Session = Depends(get_sessio
                         failed += 1
                         items.append({"post_id": p.id, "ok": False, "reason": str(e)[:200]})
         else:
-            # 纯 HTTP 路径（1mei）
+            from app.crawler.http_client import fetch_html as _fetch
             for p in group:
                 try:
-                    html = fetch_html(p.url, headers={"User-Agent": ua},
-                                      timeout=app_settings.default_request_timeout)
+                    html = _fetch(p.url, headers={"User-Agent": ua},
+                                  timeout=app_settings.default_request_timeout)
                     detail = detail_parser(html, site.base_url)
 
                     changed = _apply_detail(p, detail)
@@ -521,3 +549,365 @@ def _apply_detail(p: Post, detail) -> bool:
     if de and not _to_list(p.ed2k):
         p.ed2k = de; changed = True
     return changed
+
+
+# ============== 智能整理（AI 拆解关键词 + 手动确认 + 批量删除） ==============
+
+class CuratePreviewRequest(BaseModel):
+    """智能整理预览：传一组 post id，调 AI 拆解关键词，并预览「哪些 post 会被命中」。
+
+    工作流：
+    1. 用户勾选若干条帖子（或不勾选 → 当前筛选条件下的所有帖子）
+    2. 调本接口 → AI 拆解关键词 + 列出每个关键词会影响哪些帖子
+    3. 前端弹窗展示，用户编辑/删除/新增关键词、勾选要删除的 post
+    4. 用户点确认 → 调 /curate/commit
+    """
+    # 场景 A: 站点级 (不传 post_ids, 传 site_id) -> 候选 = 该站点过滤规则已存在关键词
+    # 场景 B: 单帖 dislike (传 1 个 post_id) -> 候选 = AI 对该帖子输出的关键词
+    # 场景 C: 多帖批量 (传多个 post_ids) -> 候选 = AI 对这些帖子输出的关键词 (合并去重)
+    post_ids: list[int] = Field(default_factory=list, description="要整理的 post id 列表")
+    site_id: Optional[int] = Field(default=None, description="备选：站点级批量整理")
+    top_n: int = Field(default=10, ge=3, le=20, description="AI 返回几个关键词")
+
+
+class AffectedPost(BaseModel):
+    post_id: int
+    title: str
+    site_id: int
+    matched_keywords: list[str] = Field(default_factory=list)
+
+
+class CuratePreviewResponse(BaseModel):
+    ok: bool = True
+    mode: str = Field(description="site | single | multi | global  场景标识")
+    extractor: str = Field(description="ai | local")
+    suggested_rule_id: int
+    suggested_rule_name: str
+    read_only: bool = Field(default=False, description="True 表示前端禁用 commit 按钮 (global 模式只读聚合)")
+    # AI 这次新生成的关键词（仅在 single / multi 场景有效；site/global 场景为 []）
+    ai_keywords: list[str] = Field(default_factory=list, description="AI 本次新增建议的关键词")
+    # 合并后的最终关键词集合（已存在的 + AI 新增去重），前端初始编辑态
+    suggested_keywords: list[str] = Field(default_factory=list, description="已合并的最终关键词（含历史规则 + AI 建议）")
+    # 已存在的关键词（标记为「历史」关键词，不可直接删除除非用户主动删）
+    existing_keywords: list[str] = Field(default_factory=list, description="规则里已存在的关键词")
+    affected: list[AffectedPost] = Field(default_factory=list)
+    unmatched_count: int = 0
+    total_titles: int
+    # 候选帖子全集 (single/multi 模式 = 同站点前 100 条; site 模式 = 同站点全部前 200 条)
+    # 前端用这个集合做 originalPosts, 手动加关键词后能正确从全集里筛受影响
+    pool: list[AffectedPost] = Field(default_factory=list)
+
+
+class CurateCommitRequest(BaseModel):
+    """用户确认后批量入库 + 删除
+
+    keywords = 用户当前弹窗里最终保留的关键词全集
+    previous_existing = 弹窗打开时该规则已有的关键词, 用于计算哪些已被用户在前端删除
+    """
+    rule_id: int = Field(description="要写入关键词的 filter_rule id")
+    keywords: list[str] = Field(description="用户最终保留的关键词列表（合并视图的最终态）")
+    previous_existing: list[str] = Field(
+        default_factory=list,
+        description="弹窗打开时规则已存在的关键词，用于识别哪些已被用户删除",
+    )
+    post_ids_to_delete: list[int] = Field(default_factory=list, description="要被批量删除的 post id 列表")
+    note: Optional[str] = Field(default=None, description="可选备注，记录到 user_feedback")
+
+
+class CurateCommitResponse(BaseModel):
+    ok: bool
+    keywords_added: list[str] = Field(default_factory=list)
+    keywords_existing: list[str] = Field(default_factory=list)
+    keywords_removed: list[str] = Field(default_factory=list, description="本次被用户从规则里移除的关键词")
+    posts_deleted: int = 0
+    rule_id: int
+    rule_name: str
+
+
+@router.post("/curate/preview", response_model=CuratePreviewResponse)
+def curate_preview(payload: CuratePreviewRequest, session: Session = Depends(get_session)) -> CuratePreviewResponse:
+    """智能整理预览: 只读, 不删数据
+
+    四种 mode:
+    - site:   站点级批量 (传 site_id) -> 候选 = 该站点默认 exclude 规则的当前关键词
+    - single: 单帖 dislike (传 1 个 post_id) -> 候选 = AI 对该帖输出的关键词
+    - multi:  多帖批量 (传多个 post_ids) -> 候选 = AI 对这些帖输出的关键词 (合并去重)
+    - global: 全局整理 (都不传) -> 候选 = 所有 enabled exclude 规则的关键词并集 (只读聚合展示)
+
+    候选关键词编辑语义:
+    - site:           候选 = 该规则已存在的关键词, 用户增删会写回这条规则
+    - global:         候选 = 所有规则的关键词并集 (只读聚合, 编辑只影响全局 default rule)
+    - single / multi: 候选 = AI 对这些帖子输出的新关键词 (不含已存在)
+
+    注意: global 模式不会主动创建新规则, 只是聚合展示所有 exclude 规则的关键词供查看.
+    """
+    post_ids = payload.post_ids or []
+    has_posts = len(post_ids) > 0
+    has_site = payload.site_id is not None
+
+    # 0) 先确定 mode
+    # 优先级: post_ids 长度决定 single/multi, 否则 site_id 决定 site, 都没传 -> global
+    if has_posts and len(post_ids) == 1:
+        mode = "single"
+    elif has_posts and len(post_ids) > 1:
+        mode = "multi"
+    elif has_site:
+        mode = "site"
+    else:
+        mode = "global"
+
+    # 1) 取 post 列表 (single/multi/site 需要)
+    if has_posts:
+        posts = session.exec(select(Post).where(Post.id.in_(post_ids))).all()
+        if not posts:
+            raise HTTPException(404, "未找到任何 post")
+        primary_site_id = posts[0].site_id
+        site_ids = list({p.site_id for p in posts})
+    elif mode == "site":
+        primary_site_id = payload.site_id
+        site_ids = [primary_site_id]
+        posts = session.exec(
+            select(Post).where(Post.site_id == primary_site_id)
+            .order_by(Post.created_at.desc()).limit(200)
+        ).all()
+    else:
+        # global 模式: 不取 post, 只是管理关键词
+        primary_site_id = None
+        site_ids = []
+        posts = []
+
+    # 2) 取「要管理的关键词」 (global 模式不走 _get_or_create_default_rule, 不会创建任何规则)
+    if mode == "global":
+        # ★ global 模式: 候选 = 所有 enabled exclude 规则的关键词并集 (去重, 字母排序)
+        # 只读聚合展示, 不创建/不修改任何规则
+        existing_keywords = _collect_all_exclude_keywords(session)
+        rule_id = 0  # sentinel: 前端 commit 时识别为全局聚合模式
+        rule_name = "全站过滤关键词聚合"
+    else:
+        # 找/建一个站点默认 exclude 规则
+        rule = _get_or_create_default_rule(
+            session,
+            site_id=primary_site_id,
+            rule_type="exclude",
+            rule_name_prefix="智能整理 exclude",
+        )
+        rule_id = rule.id
+        rule_name = rule.name
+        existing_kw_rows = session.exec(
+            select(FilterKeyword).where(FilterKeyword.rule_id == rule.id)
+        ).all()
+        existing_keywords = [k.keyword for k in existing_kw_rows]
+
+    existing_set = {k.lower() for k in existing_keywords}
+
+    # 4) 按 mode 决定「候选关键词」来源
+    ai_keywords_new: list[str] = []
+    extractor = get_extractor()
+    source = "local"
+
+    if mode in ("site", "global"):
+        # ★ 站点级 / 全局级整理：候选关键词 = 现有过滤关键词，不混入 AI 建议
+        merged_keywords = list(existing_keywords)
+        ai_keywords_new = []
+        source = "local"
+    else:
+        # single / multi：候选关键词 = AI 对这些帖子输出的关键词
+        titles = [p.title or "" for p in posts if p.title]
+        # 辅助信号：该站点的 dislike 历史标题（让 AI 学习偏好）
+        # 注意: single 模式 (1 个 post) 不带历史, 让 AI 专注分析这一条帖子;
+        # multi 模式 (多条) 才带历史学偏好. 否则当前帖子的关键词会被历史噪声淹没.
+        history_titles: list[str] = []
+        if mode == "multi" and len(site_ids) >= 1:
+            if len(site_ids) == 1:
+                sid = site_ids[0]
+                for fb in session.exec(
+                    select(UserFeedback)
+                    .where(
+                        UserFeedback.site_id == sid,
+                        UserFeedback.action == "dislike",
+                    )
+                    .order_by(UserFeedback.id.desc())
+                    .limit(15)
+                ).all():
+                    if fb.title and fb.title not in history_titles:
+                        history_titles.append(fb.title)
+            else:
+                per_site = max(3, 15 // len(site_ids))
+                for sid in site_ids:
+                    for fb in session.exec(
+                        select(UserFeedback)
+                        .where(UserFeedback.site_id == sid, UserFeedback.action == "dislike")
+                        .order_by(UserFeedback.id.desc())
+                        .limit(per_site)
+                    ).all():
+                        if fb.title and fb.title not in history_titles:
+                            history_titles.append(fb.title)
+
+        titles_for_ai = list({*titles, *history_titles})[:20]
+        keywords, source = extractor.extract(titles_for_ai, action="dislike", top_n=payload.top_n)
+        ai_keywords_raw = [k.strip().lower() for k in (keywords or []) if k and k.strip()]
+        ai_keywords_new = [k for k in ai_keywords_raw if k and k not in existing_set]
+        # ★ 关键: single/multi 模式下, merged_keywords 只取 ai_keywords_new,
+        # existing_keywords 保留在独立字段作为参考, 但不进入编辑区
+        # 这样单帖 dislike 弹窗里只会看到 AI 给该帖的关键词, 不会被历史词干扰
+        merged_keywords = list(ai_keywords_new)
+
+    # 5) 用「合并后的关键词」去匹配每个 post，列出受影响帖子
+    # 在 single/multi 模式下, posts 已经是用户传进来的; 在 site 模式下是站点前 200 条
+    # 但对于 single 模式 (用户传了 1 个 post_id), 用户期望「加一个关键词后, 站点里其它包含该词的帖子也显示」
+    # 所以这里要按 site_id 扩出去, 让 affected 反映「真正会被这些关键词命中的帖子」, 而不只是用户选的那条
+    affected: list[AffectedPost] = []
+    unmatched = 0
+
+    # 按需扩展 post 池 (single/multi 模式): 用 site_ids 内每个站点的前 100 条帖子
+    pool: list = list(posts)
+    if mode in ("single", "multi"):
+        site_pool: dict[int, list] = {}
+        for sid in site_ids:
+            extra = session.exec(
+                select(Post).where(Post.site_id == sid)
+                .order_by(Post.created_at.desc()).limit(100)
+            ).all()
+            site_pool[sid] = extra
+        # 保留用户传的原 posts (置顶), 再追加同站点其它帖子去重
+        seen_pids = {p.id for p in pool}
+        for sid, extras in site_pool.items():
+            for ep in extras:
+                if ep.id not in seen_pids:
+                    pool.append(ep)
+                    seen_pids.add(ep.id)
+
+    for p in pool:
+        t_lc = (p.title or "").lower()
+        hits = [k for k in merged_keywords if k and k in t_lc]
+        if hits:
+            affected.append(
+                AffectedPost(
+                    post_id=p.id,
+                    title=p.title or "",
+                    site_id=p.site_id,
+                    matched_keywords=hits,
+                )
+            )
+        else:
+            unmatched += 1
+
+    session.commit()
+    if mode != "global":
+        # global 模式下没有具体 rule 可刷新, rule 变量未定义
+        session.refresh(rule)
+
+    return CuratePreviewResponse(
+        ok=True,
+        mode=mode,
+        extractor=source,
+        suggested_rule_id=rule_id,
+        suggested_rule_name=rule_name,
+        read_only=(mode == "global"),
+        ai_keywords=ai_keywords_new,
+        suggested_keywords=merged_keywords,
+        existing_keywords=existing_keywords,
+        affected=affected,
+        unmatched_count=unmatched,
+        total_titles=len(pool),
+        # 全集 (含未命中的) 传给前端, 让前端 manual add kw 时能从全 pool 重算 affected
+        pool=[
+            AffectedPost(
+                post_id=p.id,
+                title=p.title or "",
+                site_id=p.site_id,
+                matched_keywords=[],  # 前端会用 workingKeywords 自己重算
+            )
+            for p in pool
+        ],
+    )
+
+
+@router.post("/curate/commit", response_model=CurateCommitResponse)
+def curate_commit(payload: CurateCommitRequest, session: Session = Depends(get_session)):
+    """用户确认后批量入库关键词 + 删除匹配到的帖子
+
+    行为:
+      - keywords 中不在 previous_existing 的 -> 新增 (source=user_dislike)
+      - previous_existing 中不在 keywords 的 -> 物理删除 (用户在前端移除了)
+      - keywords 交 previous_existing 的 -> 保留不动
+    """
+    rule = session.get(FilterRule, payload.rule_id)
+    if not rule:
+        raise HTTPException(404, "rule 不存在")
+    if rule.rule_type != "exclude":
+        raise HTTPException(400, "智能整理只支持 exclude 规则")
+
+    # 1) 计算要新增 / 删除的关键词
+    previous_set = {k.strip().lower() for k in (payload.previous_existing or []) if k and k.strip()}
+    final_set = {k.strip().lower() for k in (payload.keywords or []) if k and k.strip()}
+    to_add = sorted(final_set - previous_set)
+    to_remove = sorted(previous_set - final_set)
+
+    # 2) 新增关键词入库
+    added = _persist_keywords(
+        session, rule_id=rule.id, keywords=to_add, source="user_dislike"
+    )
+
+    # 3) 删除用户在前端移除的关键词（物理删除）
+    removed: list[str] = []
+    if to_remove:
+        rows = session.exec(
+            select(FilterKeyword).where(
+                FilterKeyword.rule_id == rule.id,
+                FilterKeyword.keyword.in_(to_remove),
+            )
+        ).all()
+        for r in rows:
+            removed.append(r.keyword)
+            session.delete(r)
+
+    # 4) 写 user_feedback 汇总（一次整理记一条）
+    if payload.post_ids_to_delete:
+        posts = session.exec(
+            select(Post).where(Post.id.in_(payload.post_ids_to_delete))
+        ).all()
+        for p in posts:
+            _record_feedback(
+                session,
+                post=p,
+                title=p.title or "",
+                site_id=p.site_id,
+                action="dislike",
+                keywords=sorted(final_set),
+                rule_id=rule.id,
+                rule_type="exclude",
+                note=(
+                    f"批量整理（{payload.note or 'curate'}）· "
+                    f"共 {len(posts)} 条 · +{len(added)}/{-len(removed)} 关键词"
+                ),
+            )
+
+    # 5) 删除指定 posts
+    deleted = 0
+    if payload.post_ids_to_delete:
+        to_del = session.exec(
+            select(Post).where(Post.id.in_(payload.post_ids_to_delete))
+        ).all()
+        for p in to_del:
+            session.delete(p)
+            deleted += 1
+
+    session.commit()
+    session.refresh(rule)
+
+    # 6) 失效缓存
+    if rule.scope == "global":
+        invalidate_filter_rules_cache(None)
+    elif rule.site_id is not None:
+        invalidate_filter_rules_cache(rule.site_id)
+
+    return CurateCommitResponse(
+        ok=True,
+        keywords_added=added,
+        keywords_existing=sorted(final_set & previous_set),
+        keywords_removed=removed,
+        posts_deleted=deleted,
+        rule_id=rule.id,
+        rule_name=rule.name,
+    )

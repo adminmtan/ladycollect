@@ -4,7 +4,8 @@ from __future__ import annotations
 import logging
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from typing import Annotated
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
@@ -34,6 +35,14 @@ class ChangePasswordBody(BaseModel):
 
 class SetupBody(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=8, max_length=72)
+
+
+class DevResetBody(BaseModel):
+    """开发模式专用：把 admin 密码重置为已知值，避免本地忘了密码后无法登录。
+    启用条件：环境变量 DEV_RESET_TOKEN 被设置且非空，请求头 X-Dev-Reset 必须等于该值。
+    生产容器绝对不要设置 DEV_RESET_TOKEN。
+    """
     password: str = Field(..., min_length=8, max_length=72)
 
 
@@ -92,7 +101,6 @@ def change_password(
 ):
     if not verify_password(body.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="当前密码错误")
-    session.add(User.__class__)  # noop 占位避免 unused
     user.password_hash = hash_password(body.new_password)
     user.must_change_password = False
     session.add(user)
@@ -131,6 +139,46 @@ def setup(body: SetupBody, session: Session = Depends(get_session)):
         user.must_change_password = False
     session.commit()
     logger.info("本地初始化完成：username=%s", body.username)
+    return {"ok": True}
+
+
+@router.post("/dev-reset-password")
+def dev_reset_password(
+    body: DevResetBody,
+    session: Session = Depends(get_session),
+    x_dev_reset: Annotated[str | None, Header(alias="X-Dev-Reset")] = None,
+):
+    """开发专用：admin 密码忘了的话，本地一行 curl 就能重置。
+
+    安全门：环境变量 DEV_RESET_TOKEN 非空时，请求头 X-Dev-Reset 必须完全匹配；
+    DEV_RESET_TOKEN 未设置 / 为空时这个接口直接 403（即使打了 header 也无济于事）。
+
+    生产部署请勿设置 DEV_RESET_TOKEN。
+    """
+    import os as _os
+
+    expected = (_os.environ.get("DEV_RESET_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=403, detail="DEV_RESET_TOKEN 未设置，此接口在当前环境不可用")
+    if (x_dev_reset or "").strip() != expected:
+        raise HTTPException(status_code=403, detail="X-Dev-Reset header 不匹配")
+
+    user = session.exec(select(User).where(User.username == "admin")).first()
+    if user is None:
+        user = User(
+            username="admin",
+            password_hash=hash_password(body.password),
+            role="admin",
+            must_change_password=False,
+            enabled=True,
+        )
+        session.add(user)
+    else:
+        user.password_hash = hash_password(body.password)
+        user.must_change_password = False
+        session.add(user)
+    session.commit()
+    logger.warning("dev-reset-password: 已重置 admin 密码（仅在 DEV_RESET_TOKEN 启用时可用）")
     return {"ok": True}
 
 

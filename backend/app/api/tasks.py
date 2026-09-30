@@ -7,11 +7,12 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from sqlmodel import Session, select
+from sqlalchemy import update as _update
+from sqlmodel import Session, delete, select
 
 from app.crawler.runner import run_task_sync
 from app.db import get_session
-from app.models import Job, Site, Task, utcnow
+from app.models import Job, Post, Site, Task, utcnow
 from app.schemas import JobRead, TaskCreate, TaskRead, TaskUpdate
 from app.scheduler import apply_task, get_scheduler, remove_task
 
@@ -145,13 +146,48 @@ def delete_task(task_id: int, session: Session = Depends(get_session)):
     task = session.get(Task, task_id)
     if not task:
         raise HTTPException(404, "task 不存在")
+
+    # 1) 先停掉正在跑的 job（如果有），避免与删除竞争
+    running_jobs = session.exec(
+        select(Job).where(Job.task_id == task_id, Job.status == "running")
+    ).all()
+    for j in running_jobs:
+        j.status = "cancelled"
+        j.finished_at = utcnow()
+        session.add(j)
+    if running_jobs:
+        session.commit()
+        logger.warning("delete_task: task_id=%d 取消 %d 个 running job", task_id, len(running_jobs))
+
+    # 2) 把 Posts 解绑（task_id 置 NULL）—— Posts 是独立采集结果，不属于 Task 生命周期
+    #    防止 posts.task_id 变成孤儿后，前端"按 task 过滤帖子"显示成空
+    session.exec(
+        _update(Post).where(Post.task_id == task_id).values(task_id=None)
+    )
+
+    # 3) 级联删 jobs —— 关键修复！
+    #    之前只删 task，导致 jobs 表残留 task_id=已删ID 的孤儿行。
+    #    下次新建 task 跑 job 时，SQLite 自增 ROWID 接着 max(ROWID)+1，
+    #    用户看到新 task 的 jobs ID 续着上一个被删 task 的 ID，体验上像"延续"。
+    orphan_jobs = session.exec(select(Job).where(Job.task_id == task_id)).all()
+    orphan_ids = [j.id for j in orphan_jobs]
+    session.exec(delete(Job).where(Job.task_id == task_id))
+
+    # 4) 移除调度（如有）
     try:
         remove_task(task_id)
     except Exception as e:
         logger.warning("移除调度失败：%s", e)
+
+    # 5) 最后删 task 本身
     session.delete(task)
     session.commit()
-    return {"ok": True}
+
+    logger.info(
+        "delete_task: task_id=%d 清理完成（orphan_jobs=%d, posts_unbind=全部关联 posts.task_id→NULL）",
+        task_id, len(orphan_ids),
+    )
+    return {"ok": True, "deleted_jobs": len(orphan_ids)}
 
 
 @router.post("/{task_id}/run")
@@ -185,9 +221,12 @@ def stop_task(task_id: int, session: Session = Depends(get_session)):
     行为：
       - 找到该 Task 当前 status=='running' 的 Job
       - 给后台采集线程发出 cancel 事件
-      - 采集循环每页/每篇都会检查，状态变成 'cancelled'
+      - 立即把 job.status 写成 'cancelled'（即使采集线程还没响应 cancel_ev，
+        前端下一次 fetch 也会立刻看到按钮切回「启动」）
+      - 采集循环每页/每篇都会检查，状态确认变成 'cancelled'
       - 返回被取消的 job_id；如果没在跑则返回 ok=False
     """
+    from datetime import datetime, timezone as _tz
     from app.crawler.runner import request_cancel_job
 
     job = session.exec(
@@ -199,11 +238,21 @@ def stop_task(task_id: int, session: Session = Depends(get_session)):
         return {"ok": False, "msg": "没有正在运行的 Job"}
 
     signaled = request_cancel_job(job.id)
+    # 立刻写 cancelled：UI 能在下一次 3s 轮询内看到按钮切回「启动」，
+    # 采集线程后续即使检测到 status 已 cancelled 也会快速退出。
+    job.status = "cancelled"
+    if not job.finished_at:
+        job.finished_at = datetime.now(_tz.utc)
+    if not job.error:
+        job.error = "用户手动取消"
+    session.add(job)
+    session.commit()
+
     return {
         "ok": True,
         "signaled": signaled,
         "job_id": job.id,
-        "msg": "已发出取消信号，采集循环将尽快停止",
+        "msg": "已停止（采集循环将在 30s 内彻底退出）",
     }
 
 

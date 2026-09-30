@@ -1,106 +1,157 @@
 <template>
   <div class="sites-view">
     <div class="glass-card">
-      <!-- 头部 -->
+      <!-- 头部：标题 + 计数 + 主操作 -->
       <div class="table-header">
-        <div class="header-title">
-          <el-icon><Setting /></el-icon>
-          <span>站点配置</span>
+        <div class="header-left">
+          <el-icon class="header-icon"><Setting /></el-icon>
+          <span class="header-title">站点配置</span>
+          <span v-if="store.sites.length" class="header-count">
+            {{ store.sites.length }} 个站点 ·
+            <span class="active-count">{{ activeCount }} 启用</span>
+          </span>
         </div>
-        <el-button type="primary" @click="openCreate">
-          <el-icon><Plus /></el-icon>
-          新增站点
-        </el-button>
+        <div class="header-right">
+          <el-button @click="store.fetch()" :loading="store.loading" plain>
+            <el-icon style="margin-right: 4px"><Refresh /></el-icon>刷新
+          </el-button>
+          <el-button type="primary" @click="openCreate">
+            <el-icon style="margin-right: 4px"><Plus /></el-icon>新增站点
+          </el-button>
+        </div>
       </div>
 
       <!-- 表格 -->
-      <el-table :data="store.sites" v-loading="store.loading" empty-text="暂无站点" class="dark-table">
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="name" label="名称" width="160">
+      <el-table
+        :data="store.sites"
+        v-loading="store.loading"
+        empty-text="暂无站点 — 点击右上「新增站点」开始"
+        class="dark-table"
+      >
+        <el-table-column prop="id" label="#" width="56">
           <template #default="{ row }">
-            <span class="site-name">{{ row.name }}</span>
+            <span class="row-id">{{ row.id }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="host" label="域名" width="180" />
-        <el-table-column prop="base_url" label="Base URL" min-width="200" />
-        <el-table-column label="适配器" width="220">
+        <el-table-column prop="name" label="名称" min-width="140" width="160">
           <template #default="{ row }">
-            <div class="adapter-tags">
-              <span :class="['adapter-tag', row.adapter === 'sehuatang' ? 'tag-warning' : 'tag-info']">
+            <div class="site-name">
+              <span class="site-name-text">{{ row.name }}</span>
+              <span v-if="!row.enabled" class="disabled-dot" title="已停用">·</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="host" label="域名" min-width="150">
+          <template #default="{ row }">
+            <span class="mono host-text">{{ row.host }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="base_url" label="Base URL" min-width="220">
+          <template #default="{ row }">
+            <span class="mono url-text" :title="row.base_url">{{ row.base_url }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="适配器" width="200">
+          <template #default="{ row }">
+            <div class="adapter-stack">
+              <span class="chip" :class="`chip-${adapterTone(row.adapter)}`">
                 {{ row.adapter || 'onemei' }}
               </span>
-              <span v-if="row.adapter === 'sehuatang' && row.forum_fid" class="adapter-tag tag-plain">
+              <span v-if="row.adapter === 'sehuatang' && row.forum_fid" class="meta-chip">
                 FID {{ row.forum_fid }}
               </span>
-              <span v-if="row.list_urls?.length" class="adapter-tag tag-plain">
-                {{ row.list_urls.length }} 个 URL
+              <span v-if="row.list_urls?.length" class="meta-chip">
+                {{ row.list_urls.length }} URL
               </span>
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="user_agent" label="UA" show-overflow-tooltip>
+        <el-table-column label="高级" width="100" align="center">
           <template #default="{ row }">
-            <span class="ua-text">{{ row.user_agent || '-' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="fingerprint_seed" label="指纹" width="90">
-          <template #default="{ row }">
-            <span class="seed-text">{{ row.fingerprint_seed ?? '-' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="过滤规则" width="160" show-overflow-tooltip>
-          <template #default="{ row }">
-            <el-button
-              link
-              type="primary"
-              size="small"
-              @click="goFilterRules(row.id)"
-              class="rule-link"
+            <el-tooltip
+              placement="top"
+              :show-after="200"
+              :content="advancedTooltip(row)"
             >
-              <el-icon><Filter /></el-icon>
-              管理过滤规则
+              <span class="advanced-summary mono">{{ advancedSummary(row) }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="过滤规则" width="110" align="center">
+          <template #default="{ row }">
+            <el-button link size="small" @click="goFilterRules(row.id)" class="rule-link">
+              <el-icon style="margin-right: 2px"><Filter /></el-icon>规则
             </el-button>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column label="状态" width="84" align="center">
           <template #default="{ row }">
-            <span :class="['status-pill', row.enabled ? 'status-active' : 'status-inactive']">
-              {{ row.enabled ? '启用' : '停用' }}
-            </span>
+            <el-switch
+              :model-value="row.enabled"
+              @change="onToggle(row, $event)"
+              size="small"
+              class="enable-switch"
+            />
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="150" fixed="right" align="right">
           <template #default="{ row }">
             <div class="action-buttons">
-              <el-button link type="primary" @click="probe(row)" class="btn-link">连通性</el-button>
-              <el-button link type="primary" @click="openEdit(row)" class="btn-link">编辑</el-button>
-              <el-popconfirm title="确认删除该站点？" @confirm="remove(row)">
+              <el-button link size="small" @click="probe(row)" class="action-link">测试</el-button>
+              <el-button link size="small" @click="openEdit(row)" class="action-link">编辑</el-button>
+              <el-popconfirm
+                :title="`确认删除「${row.name}」？`"
+                confirm-button-text="删除"
+                cancel-button-text="取消"
+                @confirm="remove(row)"
+              >
                 <template #reference>
-                  <el-button link type="danger" class="btn-link">删除</el-button>
+                  <el-button link size="small" class="action-link danger">删除</el-button>
                 </template>
               </el-popconfirm>
             </div>
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 表格底部 status bar -->
+      <div v-if="store.sites.length" class="table-footer">
+        <span class="footer-item">
+          <span class="footer-dot active" />
+          启用 {{ activeCount }}
+        </span>
+        <span class="footer-divider" />
+        <span class="footer-item">
+          <span class="footer-dot inactive" />
+          停用 {{ store.sites.length - activeCount }}
+        </span>
+        <span class="footer-divider" />
+        <span class="footer-item">共 {{ store.sites.length }} 条</span>
+      </div>
     </div>
 
     <!-- 编辑弹窗 -->
-    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑站点' : '新增站点'" width="600px" class="site-dialog">
+    <el-dialog
+      v-model="dialogVisible"
+      :title="form.id ? '编辑站点' : '新增站点'"
+      width="640px"
+      class="site-dialog"
+      :close-on-click-modal="false"
+    >
       <el-form :model="form" label-width="100px" size="default" class="site-form">
-        <el-form-item label="名称">
+        <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="如：1mei 主站" />
         </el-form-item>
-        <el-form-item label="域名">
+        <el-form-item label="域名" required>
           <el-input v-model="form.host" placeholder="1mei.live" />
         </el-form-item>
-        <el-form-item label="Base URL">
+        <el-form-item label="Base URL" required>
           <el-input v-model="form.base_url" placeholder="https://1mei.live" />
         </el-form-item>
         <el-form-item label="适配器">
           <el-select v-model="form.adapter" style="width: 100%" @change="onAdapterChange">
-            <el-option label="onemei (默认 / WordPress 主题)" value="onemei" />
-            <el-option label="sehuatang (Discuz! 论坛, 强制 CloakBrowser)" value="sehuatang" />
+            <el-option label="onemei（默认 / WordPress 主题）" value="onemei" />
+            <el-option label="sehuatang（Discuz! 论坛，强制浏览器）" value="sehuatang" />
           </el-select>
         </el-form-item>
 
@@ -109,11 +160,17 @@
           <el-alert type="warning" :closable="false" show-icon class="config-alert">
             <template #title>
               <span>论坛板块 FID（Discuz）</span>
-              <span class="alert-hint">例如 国产原创=2，使用 URL 形如 <code>forum-{fid}-{page}.html</code></span>
+              <span class="alert-hint">
+                例如「国产原创」= 2，URL 形如
+                <code>forum-{fid}-{page}.html</code>
+              </span>
             </template>
           </el-alert>
           <el-form-item label="板块 FID">
-            <el-input v-model="form.forum_fid" placeholder="如 2（国产原创），留空 + 填下方 URL 列表 = 自定义入口" />
+            <el-input
+              v-model="form.forum_fid"
+              placeholder="如 2（国产原创）；留空 + 填下方 URL 列表 = 自定义入口"
+            />
           </el-form-item>
         </div>
 
@@ -139,7 +196,12 @@
           <el-input v-model="form.proxy" placeholder="socks5://user:pass@host:1080" />
         </el-form-item>
         <el-form-item label="指纹种子">
-          <el-input-number v-model="form.fingerprint_seed" :min="0" :max="999999" placeholder="CloakBrowser fingerprint seed" />
+          <el-input-number
+            v-model="form.fingerprint_seed"
+            :min="0"
+            :max="999999"
+            placeholder="DrissionPage fingerprint seed"
+          />
         </el-form-item>
 
         <!-- 过滤词迁移提示（关键词维护已统一到过滤规则页面） -->
@@ -151,13 +213,14 @@
         >
           <template #title>
             <span>标题关键词已迁移到「过滤规则」</span>
-            <span class="alert-hint">包含 / 排除关键词、用户反馈学习规则统一在过滤规则页面管理</span>
+            <span class="alert-hint">
+              包含 / 排除关键词、用户反馈学习规则统一在过滤规则页面管理
+            </span>
           </template>
         </el-alert>
         <div class="rule-migrate-actions">
           <el-button type="primary" plain @click="goFilterRules(form.id)">
-            <el-icon><Filter /></el-icon>
-            前往过滤规则页面
+            <el-icon style="margin-right: 4px"><Filter /></el-icon>前往过滤规则页面
           </el-button>
         </div>
 
@@ -177,10 +240,10 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Setting, Plus, Filter } from '@element-plus/icons-vue'
+import { Setting, Plus, Filter, Refresh } from '@element-plus/icons-vue'
 import { useSiteStore } from '@/stores/sites'
 import type { Site, SiteCreate } from '@/api'
 
@@ -207,6 +270,37 @@ const form = reactive<
   enabled: true,
   note: '',
 })
+
+const activeCount = computed(
+  () => store.sites.filter((s) => s.enabled).length,
+)
+
+function adapterTone(adapter?: string): string {
+  switch ((adapter || 'onemei').toLowerCase()) {
+    case 'sehuatang':
+      return 'accent'
+    case 'onemei':
+      return 'muted'
+    default:
+      return 'muted'
+  }
+}
+
+function advancedSummary(row: Site): string {
+  const parts: string[] = []
+  if (row.fingerprint_seed != null) parts.push(`#${row.fingerprint_seed}`)
+  if (row.proxy) parts.push('proxy')
+  if (row.user_agent) parts.push('UA')
+  return parts.length ? parts.join(' · ') : '—'
+}
+
+function advancedTooltip(row: Site): string {
+  const lines: string[] = []
+  lines.push(`UA: ${row.user_agent || '默认'}`)
+  lines.push(`代理: ${row.proxy || '无'}`)
+  lines.push(`指纹: ${row.fingerprint_seed ?? '未设置'}`)
+  return lines.join('\n')
+}
 
 function parseLines(text: string): string[] {
   return (text || '')
@@ -291,8 +385,15 @@ async function remove(s: Site) {
   ElMessage.success('已删除')
 }
 
+async function onToggle(row: Site, val: boolean | string | number) {
+  const next = Boolean(val)
+  await store.update(row.id, { enabled: next })
+  row.enabled = next
+  ElMessage.success(next ? '已启用' : '已停用')
+}
+
 async function probe(s: Site) {
-  const loading = ElMessage({ message: '正在测试连通性...', duration: 0 })
+  const loading = ElMessage({ message: '正在测试连通性…', duration: 0 })
   try {
     const r = await store.probe(s.id)
     loading.close()
@@ -309,7 +410,10 @@ async function probe(s: Site) {
 
 function goFilterRules(siteId?: number) {
   dialogVisible.value = false
-  router.push({ path: '/filter-rules', query: siteId ? { site_id: String(siteId) } : undefined })
+  router.push({
+    path: '/filter-rules',
+    query: siteId ? { site_id: String(siteId) } : undefined,
+  })
 }
 
 onMounted(() => store.fetch())
@@ -325,136 +429,264 @@ onMounted(() => store.fetch())
   overflow: hidden;
 }
 
-/* 表格头部 */
+/* ============ 头部 ============ */
 .table-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 24px;
+  padding: 18px 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 16px;
 }
-
-.header-title {
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.header-right {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--color-foreground);
+  flex-shrink: 0;
 }
-
-.header-title .el-icon {
+.header-icon {
   font-size: 20px;
   color: var(--color-accent);
 }
-
-/* 表格样式 */
-.dark-table {
-  padding: 0;
-}
-
-.dark-table :deep(.el-table__header-wrapper th) {
-  background: var(--color-muted) !important;
-  color: var(--color-foreground);
-  font-weight: 600;
-  font-size: 13px;
-  border: none !important;
-  padding: 14px 12px;
-}
-
-.dark-table :deep(.el-table__body-wrapper td) {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
-  padding: 14px 12px;
-}
-
-.dark-table :deep(.el-table__body-wrapper tr:hover td) {
-  background: rgba(255, 255, 255, 0.02) !important;
-}
-
-/* 站点名称 */
-.site-name {
+.header-title {
+  font-size: 15px;
   font-weight: 600;
   color: var(--color-foreground);
+  letter-spacing: 0.2px;
+  font-family: var(--font-heading);
 }
-
-/* UA 文本 */
-.ua-text {
+.header-count {
   font-family: var(--font-heading);
   font-size: 12px;
   color: var(--color-muted-foreground);
+  padding: 3px 10px;
+  background: var(--color-muted);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
-
-/* 指纹种子 */
-.seed-text {
-  font-family: var(--font-heading);
-  font-size: 12px;
-  color: var(--color-muted-foreground);
-}
-
-/* 适配器标签 */
-.adapter-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.adapter-tag {
-  font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 4px;
+.active-count {
+  color: var(--color-accent);
   font-weight: 500;
 }
 
-.tag-warning {
-  background: rgba(245, 158, 11, 0.15);
-  color: #f59e0b;
-  border: 1px solid rgba(245, 158, 11, 0.3);
+/* ============ 表格 ============ */
+.dark-table {
+  padding: 0;
+}
+.dark-table :deep(.el-table__header-wrapper th) {
+  background: rgba(255, 255, 255, 0.025) !important;
+  color: var(--color-muted-foreground);
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  border: none !important;
+  padding: 12px 12px;
+}
+.dark-table :deep(.el-table__body-wrapper td) {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+  padding: 14px 12px;
+  vertical-align: middle;
+}
+.dark-table :deep(.el-table__body-wrapper tr:hover td) {
+  background: rgba(34, 197, 94, 0.04) !important;
+}
+.dark-table :deep(.el-table__body-wrapper tr.disabled-row td) {
+  opacity: 0.55;
 }
 
-.tag-info {
-  background: rgba(59, 130, 246, 0.15);
-  color: #3b82f6;
-  border: 1px solid rgba(59, 130, 246, 0.3);
+/* ============ 字段 ============ */
+.row-id {
+  font-family: var(--font-heading);
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+.site-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.site-name-text {
+  font-weight: 600;
+  color: var(--color-foreground);
+  font-size: 14px;
+}
+.disabled-dot {
+  color: var(--color-muted-foreground);
+  font-size: 18px;
+  line-height: 1;
 }
 
-.tag-plain {
+.mono {
+  font-family: var(--font-heading);
+}
+.host-text {
+  font-size: 12.5px;
+  color: var(--color-foreground);
+}
+.url-text {
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.advanced-summary {
+  font-size: 11.5px;
+  color: var(--color-muted-foreground);
+  letter-spacing: 0.2px;
+}
+
+/* ============ chip（统一胶囊语言） ============ */
+.adapter-stack {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.chip {
+  font-family: var(--font-heading);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  padding: 3px 9px;
+  border-radius: 12px;
   background: var(--color-muted);
   color: var(--color-muted-foreground);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
-
-/* 过滤规则入口（迁移后） */
-.rule-link {
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-/* link 按钮重置：去掉默认蓝色超链接外观，改成中性按钮文本 */
-.dark-table :deep(.btn-link),
-.dark-table :deep(.rule-link) {
-  color: var(--color-foreground);
-  text-decoration: none;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-  transition: color 0.15s, background 0.15s;
-}
-
-.dark-table :deep(.btn-link:hover),
-.dark-table :deep(.rule-link:hover) {
-  background: rgba(255, 255, 255, 0.06);
+.chip-accent {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.25);
   color: var(--color-accent);
 }
-
-/* 危险色按钮需要保留语义色 */
-.dark-table :deep(.btn-link.el-button--danger) {
-  color: #f87171;
+.meta-chip {
+  font-family: var(--font-heading);
+  font-size: 10.5px;
+  color: var(--color-muted-foreground);
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.04);
 }
-.dark-table :deep(.btn-link.el-button--danger:hover) {
-  background: rgba(248, 113, 113, 0.12);
-  color: #fca5a5;
+
+/* ============ action link ============ */
+.action-buttons {
+  display: inline-flex;
+  gap: 2px;
+  justify-content: flex-end;
+}
+.action-link {
+  font-size: 12.5px !important;
+  color: var(--color-foreground) !important;
+  padding: 4px 8px !important;
+  border-radius: 4px !important;
+  font-weight: 500;
+  transition: color 0.15s, background 0.15s;
+}
+.action-link:hover {
+  background: rgba(34, 197, 94, 0.08) !important;
+  color: var(--color-accent) !important;
+}
+.action-link.danger {
+  color: #f87171 !important;
+}
+.action-link.danger:hover {
+  background: rgba(239, 68, 68, 0.1) !important;
+  color: #fca5a5 !important;
+}
+
+.rule-link {
+  font-size: 12.5px !important;
+  color: var(--color-accent) !important;
+  padding: 4px 8px !important;
+  border-radius: 4px !important;
+  font-weight: 500;
+}
+.rule-link:hover {
+  background: rgba(34, 197, 94, 0.08) !important;
+}
+
+.enable-switch {
+  --el-switch-on-color: var(--color-accent);
+}
+
+/* ============ footer status bar ============ */
+.table-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 24px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  background: rgba(0, 0, 0, 0.15);
+  font-family: var(--font-heading);
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+.footer-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.footer-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-muted-foreground);
+}
+.footer-dot.active {
+  background: var(--color-accent);
+  box-shadow: 0 0 6px var(--color-accent);
+}
+.footer-divider {
+  width: 1px;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ============ 弹窗 ============ */
+.site-dialog :deep(.el-dialog__header) {
+  padding: 18px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.site-dialog :deep(.el-dialog__body) {
+  padding: 22px 24px;
+}
+.site-dialog :deep(.el-dialog__footer) {
+  padding: 14px 24px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.config-section {
+  margin-bottom: 12px;
+}
+.config-alert {
+  margin-bottom: 12px;
+}
+.config-alert :deep(.el-alert__title) {
+  font-size: 13px;
+}
+.alert-hint {
+  color: var(--color-muted-foreground);
+  margin-left: 8px;
+  font-size: 12px;
+}
+.alert-hint code {
+  background: var(--color-muted);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-heading);
+  font-size: 11px;
+  color: var(--color-accent);
 }
 
 .rule-migrate-hint :deep(.el-alert__title) {
@@ -463,77 +695,9 @@ onMounted(() => store.fetch())
   flex-wrap: wrap;
   gap: 6px;
 }
-
 .rule-migrate-actions {
   display: flex;
   justify-content: flex-start;
   margin: 8px 0 20px;
-}
-
-/* 状态胶囊 */
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.status-active {
-  background: rgba(34, 197, 94, 0.15);
-  color: var(--color-accent);
-}
-
-.status-inactive {
-  background: var(--color-muted);
-  color: var(--color-muted-foreground);
-}
-
-/* 操作按钮 */
-.action-buttons {
-  display: flex;
-  gap: 4px;
-}
-
-/* 表单 */
-.site-dialog :deep(.el-dialog__header) {
-  padding: 20px 24px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.site-dialog :deep(.el-dialog__body) {
-  padding: 24px;
-}
-
-.site-dialog :deep(.el-dialog__footer) {
-  padding: 16px 24px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.config-section {
-  margin-bottom: 16px;
-}
-
-.config-alert {
-  margin-bottom: 12px;
-}
-
-.config-alert :deep(.el-alert__title) {
-  font-size: 13px;
-}
-
-.alert-hint {
-  color: var(--color-muted-foreground);
-  margin-left: 8px;
-  font-size: 12px;
-}
-
-.alert-hint code {
-  background: var(--color-muted);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: var(--font-heading);
-  font-size: 11px;
 }
 </style>

@@ -263,6 +263,44 @@ export const postsApi = {
     api.delete<{ ok: boolean; deleted_posts: number; deleted_job: number }>(
       `/api/posts/jobs/${job_id}`,
     ).then((r) => r.data),
+
+  /** 智能整理预览：AI 拆解关键词 + 列出哪些 post 会被命中（不删数据） */
+  curatePreview: (payload: { post_ids?: number[]; site_id?: number; top_n?: number }) =>
+    api
+      .post<{
+        ok: boolean
+        mode: 'site' | 'single' | 'multi'
+        extractor: 'ai' | 'local'
+        suggested_rule_id: number
+        suggested_rule_name: string
+        ai_keywords: string[]
+        suggested_keywords: string[]
+        existing_keywords: string[]
+        affected: { post_id: number; title: string; site_id: number; matched_keywords: string[] }[]
+        unmatched_count: number
+        total_titles: number
+      }>('/api/posts/curate/preview', payload)
+      .then((r) => r.data),
+
+  /** 智能整理确认：把关键词写入规则 + 删除指定 posts */
+  curateCommit: (payload: {
+    rule_id: number
+    keywords: string[]
+    previous_existing: string[]
+    post_ids_to_delete: number[]
+    note?: string | null
+  }) =>
+    api
+      .post<{
+        ok: boolean
+        keywords_added: string[]
+        keywords_existing: string[]
+        keywords_removed: string[]
+        posts_deleted: number
+        rule_id: number
+        rule_name: string
+      }>('/api/posts/curate/commit', payload)
+      .then((r) => r.data),
 }
 
 export const statsApi = {

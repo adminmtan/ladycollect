@@ -11,7 +11,7 @@
 #   lifespan 起来后看到 admin 已经是真实密码，直接使用。
 set -e
 
-echo "[entrypoint] 启动 crawler-panel (基于 DrissionPage)"
+echo "[entrypoint] 启动 crawler-panel (基于 Playwright)"
 
 # 确保数据目录存在
 mkdir -p /app/data /app/data/profile /app/data/certs /app/data/logs/archive

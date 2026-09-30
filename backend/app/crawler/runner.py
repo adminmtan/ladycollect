@@ -23,8 +23,8 @@ import httpx
 from sqlmodel import Session, select
 
 from app.config import settings as app_settings
-from app.crawler import onemei, sehuatang
-from app.crawler.browser import make_browser
+from app.crawler import onemei, sehuatang  # sehuatang adapter 占位：保留模块以兼容旧站点，待重新开发
+from app.crawler.browser import make_page
 from app.crawler.onemei import ListSpec
 from app.crawler.parser import (
     parse_detail_html,
@@ -61,11 +61,21 @@ def _clear_cancel_event(job_id: int) -> None:
 
 
 def request_cancel_job(job_id: int) -> bool:
-    """外部请求取消一个 Job。返回 True 表示已发出取消信号。"""
+    """外部请求取消一个 Job。
+
+    返回 True 表示信号已发出（可能 job 还没启动采集循环，但下次进入 cancel_ev 检查时
+    会立刻命中并 raise JobCancelled）。
+
+    设计原因：模块级 _cancel_events 在 uvicorn 进程重启后会清空；如果用户重启过 backend
+    而旧 Job 仍在 DB 显示 running，旧 event 已丢失。必须让 request_cancel_job 仍然能
+    set 一个新 event，让后续 runner 进入时立刻 cancel。
+    """
     with _cancel_lock:
         ev = _cancel_events.get(job_id)
         if ev is None:
-            return False
+            # event 缺失（采集循环还没跑到 _get_cancel_event 或进程重启丢失）—— 创建一个
+            ev = threading.Event()
+            _cancel_events[job_id] = ev
         ev.set()
         return True
 
@@ -85,6 +95,10 @@ def _http() -> httpx.Client:
             timeout=app_settings.default_request_timeout,
             follow_redirects=True,
             headers={"User-Agent": app_settings.default_user_agent},
+            # macOS 系统代理 (PAC) 会自动注入 127.0.0.1:7890 之类的代理地址；
+            # 但 7890 通常没进程监听，httpx 走代理会 Connection refused。
+            # 显式 trust_env=False 直连，避免 macOS 用户中招。
+            trust_env=False,
         )
     return _http_client
 
@@ -384,6 +398,25 @@ def invalidate_filter_rules_cache(site_id: Optional[int] = None) -> None:
         _RULES_CACHE.pop(site_id, None)
 
 
+def _in_date_range(
+    post_date,
+    date_from,
+    date_to,
+) -> bool:
+    """list_date 兜底过滤：post_date 为空时不过滤（保留向后兼容）。
+
+    只要列表解析出的 post_date 在 [date_from, date_to] 闭区间内就保留。
+    解析不出日期的帖子不剔除，避免列表不带日期的站点被误杀。
+    """
+    if post_date is None:
+        return True
+    if date_from and post_date < date_from:
+        return False
+    if date_to and post_date > date_to:
+        return False
+    return True
+
+
 def _filter_post_with_rules(
     meta,
     task: Task,
@@ -466,33 +499,50 @@ def _iter_specs(site: Site, task: Task, job: Optional[Job] = None, session: Opti
 
     adapter = (site.adapter or "onemei").lower()
     if adapter == "sehuatang":
-        # Discuz 论坛只支持「按板块 fid 分页」一种入口；
-        # 若 task.kind 不是 list_all / list_category（兼容：list_category 在 sehuatang 里也当作 list_all），
-        # 给出日志告警，避免 max_pages 在用户不知情的情况下覆盖其日期/搜索意图。
-        if task.kind not in ("list_all", "list_category"):
+        # Discuz 论坛按板块 fid 分页抓取
+        # list_date 模式：list_date 与 max_pages 无关 —— 翻页直到 date_from 之前为止。
+        # runner 里检测 "这一页 post_date 全部 < date_from" 时停止。
+        # 这里仍生成 max_pages 个 URL 作为安全上限（默认 100 页 ≈ 3000 帖 ≈ 几个月归档），
+        # runner 提前 break 可避免无谓请求。
+        if task.kind not in ("list_all", "list_date"):
             msg = (
                 f"⚠️ 站点 {site.host} (sehuatang) 不支持 task.kind={task.kind}，"
-                f"Discuz 论坛只能按板块分页采集（task.category 或站点 forum_fid）。已降级为 list_all。"
+                f"已降级为 list_all（按板块 fid 分页）。"
             )
             if job is not None and session is not None:
                 _append_log(job, msg, session)
             else:
                 logger.warning(msg)
-        # list_category 在 sehuatang 中：使用 task.category 作为 fid（兼容 1mei 命名）
+        elif task.kind == "list_date":
+            info = (
+                f"ℹ️ 站点 {site.host} (sehuatang) list_date 模式：按板块 fid 自动翻页，"
+                f"直到 date_from={task.date_from} 之前停止；max_pages 仅作为安全上限（默认 100）。"
+            )
+            if job is not None and session is not None:
+                _append_log(job, info, session)
+            else:
+                logger.info(info)
         fid = (
             task.category
-            if task.kind == "list_category" and (task.category or "").strip()
+            if task.category and (task.category or "").strip()
             else (getattr(site, "forum_fid", None) or None)
         )
         if not fid:
             raise ValueError(
                 f"站点 {site.host} (sehuatang) 缺少板块 FID：请在「站点编辑」填 forum_fid，"
-                f"或将 task.kind 设为 list_category 并填 category=fid"
+                f"或将 task.category 填为板块 fid"
+            )
+        # list_date 模式下 max_pages 强制最小 100 页（≈ 几个月归档），保证能翻到 date_from
+        effective_max = max(task.max_pages, 100)
+        if effective_max != task.max_pages:
+            logger.info(
+                "sehuatang list_date: max_pages=%d 提到 %d 以保证能翻到 date_from=%s",
+                task.max_pages, effective_max, task.date_from,
             )
         yield from sehuatang.iter_forum_list_urls(
             site.base_url,
             fid=fid,
-            max_pages=task.max_pages,
+            max_pages=effective_max,
         )
         return
 
@@ -512,24 +562,86 @@ def _select_parsers(site: Site):
     """根据 site.adapter 返回 (list_parser, detail_parser)"""
     adapter = (site.adapter or "onemei").lower()
     if adapter == "sehuatang":
+        # 色花堂解析器仍然可用（httpx 拿到 HTML 后可走 parse_discuz_*），
+        # 但浏览器路径已移除，跳过发生在 _build_iter_list_urls。
         return parse_discuz_list_html, parse_discuz_detail_html
     return parse_list_html, parse_detail_html
 
 
+# ----- 浏览器路径辅助函数 -----
 def _force_browser(site: Site) -> bool:
-    """某些站点必须走浏览器（如 sehuatang 的年龄验证门）"""
-    return (site.adapter or "").lower() == "sehuatang"
+    """某些站点 httpx 拿不到内容（如 sehuatang 的 CF challenge），必须走浏览器。"""
+    adapter = (site.adapter or "").lower()
+    if adapter == "sehuatang":
+        return True
+    # 兜底：站点级显式标记 use_browser 也可触发
+    return bool(getattr(site, "use_browser", False))
 
 
 def _has_age_gate(page) -> bool:
     """检测当前 page 是否是年龄验证门（sehuatang 等 Discuz 站）。
 
     验证门特征：存在 <a class="enter-btn">满18岁，请点此进入</a>
+    Playwright 用 locator() 替代 DrissionPage 的 raw.eles()。
     """
     try:
-        return page.ele("css:a.enter-btn", timeout=1) is not None
+        return page.raw.locator("a.enter-btn").count() > 0
     except Exception:
         return False
+
+
+# Cloudflare challenge 页特征（runtime evidence：sehuatang.org 在 headless 浏览器首次访问时返回的页面）
+_CF_MARKERS = (
+    "Just a moment",
+    "cf-challenge-running",
+    "cf_chl_opt",
+    "Checking your browser",
+)
+
+
+def _detect_cf_challenge(html: str) -> bool:
+    """检测当前 HTML 是否是 Cloudflare challenge 页（不是真实列表页）。
+
+    CF challenge 页特征：title="Just a moment..."、含 cf-challenge-running、
+    或带 cf_chl_opt JS 标志。出现这些特征意味着 user_data 里没有有效的
+    cf_clearance cookie（IP 已变 / profile 是空的 / 浏览器被检测为 headless）。
+    """
+    if not html:
+        return False
+    head = html[:8192]  # CF challenge HTML 通常很短（< 50KB），只看头部
+    return any(m in head for m in _CF_MARKERS)
+
+
+def _cf_warmup_retry(page, job, session, job_id: int, site_host: str, page_num: int, url: str) -> bool:
+    """CF challenge 时尝试等更久 + 重新 GET。
+
+    首次 GET CF challenge 通常 5-30s 才完成 JS proof-of-work。
+    DrissionPage 的 page.get() 默认只等 DOMContentLoaded，不等 CF JS 完成，
+    所以加 retry+更长 timeout 触发 DrissionPage 内部重试逻辑。
+
+    返回 True 表示已成功通过 CF（页面含列表特征），False 表示仍被拦截。
+    """
+    for attempt, wait_s in enumerate((15, 30, 45), start=1):
+        _log_progress(
+            job_id,
+            f"[{site_host}][p{page_num}] CF challenge 第 {attempt} 次重试（wait={wait_s}s）: {url}",
+        )
+        try:
+            page.get(url, timeout=wait_s + 10, retry=1)
+            time.sleep(wait_s)
+            html = page.html
+            if not _detect_cf_challenge(html):
+                _append_log(
+                    job, f"[p{page_num}] CF challenge 第 {attempt} 次重试成功（waited {wait_s}s）", session,
+                )
+                return True
+        except Exception as e:
+            _log_progress(
+                job_id,
+                f"[{site_host}][p{page_num}] CF 重试异常: {e}",
+                level=logging.WARNING,
+            )
+    return False
 
 
 def _same_discuz_path(url_a: str, url_b: str) -> bool:
@@ -650,16 +762,14 @@ def run_task_sync(
                     overall_ok = False
                     break
 
-                # per-site use_browser 决策：强制 / 默认
-                if use_browser is None:
-                    if _force_browser(site):
-                        ub = True
-                        _append_log(job, f"站点 {site.host} 强制使用浏览器（adapter={site.adapter}）", session)
-                    else:
-                        # 没有强制要求的站点默认走 httpx（更稳更快）；用户可在前端勾选"使用浏览器"覆盖
-                        ub = False
-                else:
-                    ub = bool(use_browser)
+                # per-site 抓取方式决策：adapter 强制浏览器 → 浏览器；其余默认 httpx
+                ub = bool(use_browser) if use_browser is not None else _force_browser(site)
+                if ub:
+                    _append_log(
+                        job,
+                        f"站点 {site.host} 使用浏览器（adapter={site.adapter or 'onemei'}）",
+                        session,
+                    )
 
                 _append_log(job, f"── 开始采集站点 {site.host} ──", session)
                 _log_progress(job_id, f"── 开始采集站点 {site.host} adapter={site.adapter or 'onemei'} ──")
@@ -674,6 +784,11 @@ def run_task_sync(
                     _append_log(job, f"⛔ 采集被取消（站点 {site.host}）", session)
                     _log_progress(job_id, f"⛔ 采集被取消（站点 {site.host}）", level=logging.WARNING)
                     break
+                except NotImplementedError as e:
+                    # adapter 暂不支持——不算采集失败，按"跳过该站点"处理
+                    _append_log(job, f"⏭ 站点 {site.host} 已跳过：{e}", session)
+                    _log_progress(job_id, f"⏭ 站点 {site.host} 已跳过：{e}", level=logging.WARNING)
+                    continue
                 except Exception as e:
                     overall_ok = False
                     logger.exception("site %s failed", site.host)
@@ -731,6 +846,8 @@ def _crawl_with_http(
     emit: ProgressCB,
     cancel_ev: threading.Event,
 ) -> None:
+    # sehuatang 等"暂不支持"的 adapter 在 _iter_specs 抛 NotImplementedError，
+    # 主循环会捕获并跳过；这里只是提示性日志，实际不会被执行到。
     headers = {
         "User-Agent": site.user_agent or app_settings.default_user_agent,
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -745,6 +862,7 @@ def _crawl_with_http(
         except Exception:
             pass
 
+    job_id = job.id
     list_parser, detail_parser = _select_parsers(site)
     specs = list(_iter_specs(site, task, job, session))
     spec_total = len(specs)
@@ -760,6 +878,18 @@ def _crawl_with_http(
             continue
 
         items = list_parser(html, site.base_url)
+        # list_date 模式：按列表内日期二次过滤（仅对 Discuz/列表带日期的 adapter 生效）
+        # onemei 等已经走 URL 日期过滤，这里是兜底
+        if task.kind == "list_date" and (task.date_from or task.date_to):
+            before = len(items)
+            items = [m for m in items if _in_date_range(m.post_date, task.date_from, task.date_to)]
+            if before != len(items):
+                _append_log(
+                    job,
+                    f"[p{spec.page}] 日期过滤 {before}→{len(items)} 篇 "
+                    f"(date_from={task.date_from}, date_to={task.date_to})",
+                    session,
+                )
         _append_log(job, f"[p{spec.page}] {spec.url} 发现 {len(items)} 篇", session)
         _log_progress(job_id, f"[{site.host}][p{spec.page}/{spec_total}] {spec.url} 发现 {len(items)} 篇")
 
@@ -814,8 +944,7 @@ def _crawl_with_http(
         session.commit()
 
 
-# =========== CloakBrowser 模式 ===========
-
+# =========== 浏览器采集（DrissionPage） ===========
 def _crawl_with_browser(
     session: Session,
     site: Site,
@@ -824,100 +953,212 @@ def _crawl_with_browser(
     emit: ProgressCB,
     cancel_ev: threading.Event,
 ) -> None:
+    """基于 DrissionPage 的浏览器采集（替代 CloakBrowser/Playwright）。
+
+    为何切换：Playwright headless 被 CF 检测（runtime evidence: 60s×6 次仍 timeout）。
+    DrissionPage 内置 Chromium 内核 + 真实 user_data_dir，CF bypass 更接近真实浏览器。
+
+    DrissionPage 的 page.get() 自带：
+    - 等 domcontentloaded / load 事件完成
+    - 失败自动 retry（默认 3 次，处理 CF challenge 重试）
+    - 返回成功 = 页面已加载（含 challenge JS 执行完成）
+
+    因此不再需要显式 wait_for_selector / wait_for_function。
+    """
     user_agent = site.user_agent or app_settings.default_user_agent
     proxy = site.proxy or app_settings.proxy_url
+    job_id = job.id
+    nav_timeout_s = max(app_settings.default_request_timeout, 30)
 
-    with make_browser(
+    with make_page(
         headless=True,
-        humanize=False,
         proxy=proxy,
         user_agent=user_agent,
-        fingerprint_seed=site.fingerprint_seed,
         profile_dir=app_settings.profile_dir,
     ) as page:
-        nav_timeout = app_settings.default_request_timeout
         list_parser, detail_parser = _select_parsers(site)
         specs = list(_iter_specs(site, task, job, session))
         spec_total = len(specs)
-        _log_progress(job_id, f"[{site.host}] 列表页总数={spec_total} 使用浏览器=True proxy={proxy or '(none)'}")
+        _log_progress(
+            job_id,
+            f"[{site.host}] 列表页总数={spec_total} 使用浏览器=CloakBrowser proxy={proxy or '(none)'}",
+        )
+
         for spec in specs:
             if cancel_ev.is_set():
                 raise JobCancelled()
             try:
-                page.get(spec.url, timeout=nav_timeout)
+                page.get(spec.url, timeout=nav_timeout_s)
+                # 先处理 age gate（点击 enter-btn 会跳到真实列表），再等列表特征元素
+                # CF challenge 通常 5-30s 完成
+                try:
+                    if _has_age_gate(page):
+                        _append_log(
+                            job, f"检测到年龄验证门，点击进入：{spec.url}", session,
+                        )
+                        _log_progress(
+                            job_id,
+                            f"[{site.host}][p{spec.page}] 检测到年龄验证门，点击进入",
+                        )
+                        btn = page.raw.locator("a.enter-btn").first
+                        if btn.count() > 0:
+                            btn.click()
+                            time.sleep(2)
+                        if not _same_discuz_path(page.url, spec.url):
+                            page.get(spec.url, timeout=nav_timeout_s)
+                except Exception as gate_err:
+                    _log_progress(
+                        job_id,
+                        f"[{site.host}][p{spec.page}] age gate 处理失败: {gate_err}",
+                        level=logging.WARNING,
+                    )
+                ok = page.wait_loaded('a[href*="thread-"]', timeout=nav_timeout_s)
+                if not ok:
+                    # 诊断：区分"CF challenge 还在跑" vs "真的反爬"
+                    cur_html = page.html or ""
+                    cur_title = page.title()
+                    is_cf = _detect_cf_challenge(cur_html)
+                    _log_progress(
+                        job_id,
+                        f"[{site.host}][p{spec.page}] wait_loaded 超时 → "
+                        f"is_cf_challenge={is_cf} title={cur_title!r} html_len={len(cur_html)}",
+                    )
+                    if is_cf:
+                        # CF challenge 还没完成（IP 没绑 cf_clearance / profile 空的）
+                        # 尝试等更久 + 重试，让 DrissionPage 内部给 CF JS challenge 充分时间
+                        if _cf_warmup_retry(page, job, session, job_id, site.host, spec.page, spec.url):
+                            ok = page.wait_loaded('a[href*="thread-"]', timeout=20)
+                    if not ok:
+                        _append_log(
+                            job,
+                            f"列表页等不到 thread- 链接（CF 拦截）: {spec.url}",
+                            session,
+                        )
+                        _log_progress(
+                            job_id,
+                            f"[{site.host}][p{spec.page}] 等不到 thread- 链接（CF 拦截）",
+                            level=logging.WARNING,
+                        )
+                        continue
             except Exception as e:
                 _append_log(job, f"列表页加载失败 {spec.url}: {e}", session)
-                _log_progress(job_id, f"[{site.host}][p{spec.page}] 列表页加载失败: {e}", level=logging.WARNING)
+                _log_progress(
+                    job_id,
+                    f"[{site.host}][p{spec.page}] 列表页加载失败: {e}",
+                    level=logging.WARNING,
+                )
                 continue
 
-            # ★ 年龄验证门（sehuatang 等 Discuz 站）：检测并点击 enter-btn
-            # 点击后页面通常会跳到首页（href="./"），需要重新 get 真实列表页
-            try:
-                if _has_age_gate(page):
-                    _append_log(job, f"检测到年龄验证门，点击进入：{spec.url}", session)
-                    _log_progress(job_id, f"[{site.host}][p{spec.page}] 检测到年龄验证门，点击进入")
-                    enter_btn = page.ele("css:a.enter-btn", timeout=5)
-                    if enter_btn:
-                        enter_btn.click()
-                        page.wait.load_start(timeout=nav_timeout)
-                        page.sleep(1.5)
-                    # enter-btn 通常跳到首页，需要重抓列表页
-                    if not _same_discuz_path(page.url, spec.url):
-                        page.get(spec.url, timeout=nav_timeout)
-                        page.sleep(1.5)
-            except Exception as e:
-                _append_log(job, f"年龄验证门处理失败（继续尝试解析）：{e}", session)
-                _log_progress(job_id, f"[{site.host}][p{spec.page}] 年龄验证门处理失败: {e}", level=logging.WARNING)
-
             html = page.html
-            items = list_parser(html, site.base_url)
-            _append_log(job, f"[p{spec.page}] {spec.url} 发现 {len(items)} 篇", session)
-            _log_progress(job_id, f"[{site.host}][p{spec.page}/{spec_total}] {spec.url} 发现 {len(items)} 篇")
+            raw_items = list_parser(html, site.base_url)
+            # list_date 早停判定：用 raw_items（过滤前）—— 整页 post_date 都早于 date_from 才停，
+            # 否则过滤后是 0 仍然不知道是"日期不对"还是"抓 0 篇"
+            if task.kind == "list_date" and task.date_from and raw_items:
+                all_dates = [m.post_date for m in raw_items if m.post_date is not None]
+                if all_dates and max(all_dates) < task.date_from:
+                    _log_progress(
+                        job_id,
+                        f"[{site.host}][p{spec.page}] 这一页所有 post_date 全部 < date_from={task.date_from}（最老={max(all_dates)}），"
+                        f"已翻到归档起点之前，停止翻页（剩余 {spec_total - spec.page} 页不再抓）",
+                    )
+                    _append_log(
+                        job,
+                        f"[p{spec.page}] 这一页 post_date 全部早于 date_from，停止翻页",
+                        session,
+                    )
+                    break
+            # list_date 兜底：按列表内日期二次过滤
+            if task.kind == "list_date" and (task.date_from or task.date_to):
+                before = len(raw_items)
+                items_meta = [
+                    m for m in raw_items
+                    if _in_date_range(m.post_date, task.date_from, task.date_to)
+                ]
+                if before != len(items_meta):
+                    _append_log(
+                        job,
+                        f"[p{spec.page}] 日期过滤 {before}→{len(items_meta)} 篇 "
+                        f"(date_from={task.date_from}, date_to={task.date_to})",
+                        session,
+                    )
+            else:
+                items_meta = raw_items
+            _append_log(job, f"[p{spec.page}] {spec.url} 发现 {len(items_meta)} 篇", session)
+            _log_progress(
+                job_id,
+                f"[{site.host}][p{spec.page}/{spec_total}] {spec.url} 发现 {len(items_meta)} 篇",
+            )
 
-            for meta in items:
+            for meta in items_meta:
                 if cancel_ev.is_set():
                     raise JobCancelled()
                 keep, _ = _filter_post_with_rules(meta, task, site, session=session)
                 if not keep:
                     continue
                 try:
-                    page.get(meta.url, timeout=nav_timeout)
+                    page.get(meta.url, timeout=nav_timeout_s)
+                    if _has_age_gate(page):
+                        btn = page.raw.locator("a.enter-btn").first
+                        if btn.count() > 0:
+                            btn.click()
+                            time.sleep(2)
+                        page.get(meta.url, timeout=nav_timeout_s)
+                    detail_html = page.html
+                    # 诊断：详情页 HTML 长度 + 是否含 magnet 字样（不发 HTML 全文，只发计数）
+                    _log_progress(
+                        job_id,
+                        f"[{site.host}][p{spec.page}] 详情页 html_len={len(detail_html)} "
+                        f"含 magnet={'magnet:?' in detail_html} "
+                        f"含 blockcode={'blockcode' in detail_html}",
+                    )
                 except Exception as e:
                     _append_log(job, f"详情页加载失败 {meta.url}: {e}", session)
-                    _log_progress(job_id, f"[{site.host}][p{spec.page}] 详情页加载失败 {meta.url}: {e}", level=logging.WARNING)
+                    _log_progress(
+                        job_id,
+                        f"[{site.host}][p{spec.page}] 详情页加载失败 {meta.url}: {e}",
+                        level=logging.WARNING,
+                    )
                     continue
 
-                detail = detail_parser(page.html, site.base_url)
+                detail = detail_parser(detail_html, site.base_url)
                 if task.only_with_links and not (detail.magnet or detail.ed2k):
-                    _append_log(
-                        job,
-                        f"详情页无 magnet/ed2k，跳过: {meta.url}",
-                        session,
+                    _append_log(job, f"详情页无 magnet/ed2k，跳过: {meta.url}", session)
+                    _log_progress(
+                        job_id,
+                        f"[{site.host}][p{spec.page}] 详情页无 magnet/ed2k，跳过: {meta.url}",
                     )
-                    _log_progress(job_id, f"[{site.host}][p{spec.page}] 详情页无 magnet/ed2k，跳过: {meta.url}")
                     continue
 
                 try:
                     saved = _save_post(session, site, task, job, meta, detail)
                 except Exception as e:
                     _append_log(job, f"入库失败 {meta.url}: {e}", session)
-                    _log_progress(job_id, f"[{site.host}][p{spec.page}] 入库失败 {meta.url}: {e}", level=logging.ERROR)
+                    _log_progress(
+                        job_id,
+                        f"[{site.host}][p{spec.page}] 入库失败 {meta.url}: {e}",
+                        level=logging.ERROR,
+                    )
                     continue
 
+                prev_saved = job.posts_saved or 0
                 if not saved:
-                    # 硬去重命中：不计 saved，写日志以便用户知晓
-                    _append_log(
-                        job,
-                        f"硬去重命中（链接已存在），跳过: {meta.url}",
-                        session,
+                    _append_log(job, f"硬去重命中（链接已存在），跳过: {meta.url}", session)
+                    _log_progress(
+                        job_id,
+                        f"[{site.host}][p{spec.page}] 硬去重命中（链接已存在），跳过: {meta.url}",
                     )
-                    _log_progress(job_id, f"[{site.host}][p{spec.page}] 硬去重命中（链接已存在），跳过: {meta.url}")
                     continue
 
                 job.progress_posts = (job.progress_posts or 0) + 1
                 job.posts_saved = (job.posts_saved or 0) + 1
                 session.add(job)
                 session.commit()
+                # 详情页成功入库：写一行到 job.log，前端能立刻看到「不是卡了，是在存详情页」
+                _append_log(
+                    job,
+                    f"[p{spec.page}] +{job.posts_saved - prev_saved} 已存 #{(detail.title or meta.title)[:40]!r}",
+                    session,
+                )
                 _log_progress(
                     job_id,
                     f"[{site.host}][p{spec.page}] +1 saved title={(detail.title or meta.title)[:50]!r} "
@@ -927,7 +1168,7 @@ def _crawl_with_browser(
                     {
                         "status": "running",
                         "page": spec.page,
-                        "found": len(items),
+                        "found": len(items_meta),
                         "saved": job.posts_saved,
                         "post_title": (detail.title or meta.title)[:60],
                     }

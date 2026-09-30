@@ -48,13 +48,9 @@
         </el-menu-item>
       </el-menu>
 
-      <!-- 底部技术栈信息 + 登出 -->
+      <!-- 底部：系统版本 / 引擎状态卡片 -->
       <div class="sidebar-footer">
-        <div class="tech-badges">
-          <span class="tech-badge">CloakBrowser</span>
-          <span class="tech-badge">DrissionPage</span>
-          <span class="tech-badge">Scrapling</span>
-        </div>
+        <SystemStatusCard />
         <el-button class="logout-btn" link @click="onLogout" v-if="auth.isAuthenticated">
           <el-icon><SwitchButton /></el-icon>
           登出 ({{ auth.user?.username }})
@@ -88,6 +84,7 @@ import { useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { DataLine, Setting, Operation, Document, Filter, Tools, SwitchButton } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import SystemStatusCard from '@/components/SystemStatusCard.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -205,29 +202,31 @@ async function onLogout() {
 }
 
 .sidebar-footer {
-  padding: 20px;
+  padding: 16px 14px 18px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   flex-direction: column;
   gap: 12px;
+  position: relative;
+}
+.sidebar-footer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(34, 197, 94, 0.35), transparent);
+  opacity: 0.6;
 }
 
 .tech-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: none;
 }
 
 .tech-badge {
-  font-size: 11px;
-  font-family: var(--font-heading);
-  color: var(--color-muted-foreground);
-  background: var(--color-muted);
-  padding: 4px 10px;
-  border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  display: none;
 }
-
 .logout-btn {
   font-size: 12px;
   color: var(--color-muted-foreground);
@@ -308,7 +307,9 @@ async function onLogout() {
 .main-content {
   flex: 1;
   padding: 24px;
+  overflow-x: hidden;
   overflow-y: auto;
   background: linear-gradient(135deg, var(--color-background) 0%, #0a0f1a 100%);
+  min-width: 0;
 }
 </style>

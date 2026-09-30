@@ -1,6 +1,6 @@
 # 采集管理应用：1mei.live 采集面板
 
-基于 CloakBrowser（反爬指纹） + DrissionPage（点击分页） + Scrapling（自适应解析）构建的采集核心，FastAPI + SQLite 后端、Vue 3 前端，单 docker-compose 一键部署。
+基于 CloakBrowser（反爬指纹） + Playwright（点击分页/过 CF challenge） + Scrapling（自适应解析）构建的采集核心，FastAPI + SQLite 后端、Vue 3 前端，单 docker-compose 一键部署。
 
 ## 功能
 
@@ -13,7 +13,7 @@
 
 - **后端**：FastAPI + SQLModel + APScheduler + Uvicorn
 - **前端**：Vue 3 + Vite + Element Plus + Pinia + Vue Router
-- **采集**：CloakBrowser + DrissionPage + Scrapling
+- **采集**：CloakBrowser + Playwright + Scrapling
 - **数据库**：SQLite（`data/app.db`）
 - **部署**：单 docker-compose（基于 `cloakhq/cloakbrowser` 镜像）
 

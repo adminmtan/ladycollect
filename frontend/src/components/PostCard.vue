@@ -132,6 +132,7 @@ const emit = defineEmits<{
   (e: 'deleted', postId: number): void
   (e: 'disliked', payload: { postId: number; ruleId: number; keywords: string[]; extractor: string }): void
   (e: 'liked', payload: { postId: number; ruleId: number; keywords: string[]; extractor: string }): void
+  (e: 'open-curate', payload: { postId: number }): void
 }>()
 
 const siteStore = useSiteStore()
@@ -170,43 +171,9 @@ async function onDelete() {
 }
 
 async function onDislike() {
-  try {
-    await ElMessageBox.confirm(
-      `确定不喜欢这篇帖子吗？\n\n系统会从标题中自动提取关键词加入过滤规则，下次采集将自动跳过类似内容。\n\n${props.post.title?.slice(0, 80) || '(无标题)'}`,
-      '标记为不喜欢',
-      {
-        type: 'warning',
-        confirmButtonText: '确认不喜欢',
-        cancelButtonText: '取消',
-        confirmButtonClass: 'el-button--danger',
-      },
-    )
-  } catch {
-    return
-  }
-  loadingDislike.value = true
-  try {
-    const res = await feedbackApi.dislike(props.post.id)
-    fadeOut()
-    if (res.keywords_added?.length) {
-      ElMessage.success({
-        message: `已学习 ${res.keywords_added.length} 个关键词：${res.keywords_added.slice(0, 4).join(' / ')}${res.keywords_added.length > 4 ? '...' : ''}（来源：${res.extractor === 'ai' ? 'AI' : '本地规则'}）`,
-        duration: 4500,
-      })
-    } else {
-      ElMessage.success(`已标记（暂未提取到新关键词，来源：${res.extractor === 'ai' ? 'AI' : '本地规则'}）`)
-    }
-    emit('disliked', {
-      postId: props.post.id,
-      ruleId: res.rule_id,
-      keywords: res.keywords_added,
-      extractor: res.extractor,
-    })
-  } catch (e: any) {
-    ElMessage.error(e.message || '操作失败')
-  } finally {
-    loadingDislike.value = false
-  }
+  // dislike 走弹窗：弹窗打开 mode=single，候选关键词 = AI 对该帖输出的关键词
+  // 用户在弹窗里可编辑/确认，确认后关键词写入规则 + 帖子被删除
+  emit('open-curate', { postId: props.post.id })
 }
 
 async function onLike() {
