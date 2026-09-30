@@ -209,6 +209,15 @@ onMounted(async () => {
   }
 })
 
+/** 一键填默认账号（Docker 首次启动的 admin）。默认密码是随机生成后打印到 docker logs 的，
+ *  不会写死到前端；只把用户名填入，密码仍需用户从 `docker logs` 复制。 */
+function fillDefault() {
+  form.username = 'admin'
+  form.password = ''
+  hint.value = '已填入默认账号 admin，密码请从 `docker logs <container>` 复制粘贴。'
+  hintType.value = 'info'
+}
+
 async function submit() {
   if (submitting.value) return
   const ok = await formRef.value?.validate().catch(() => false)

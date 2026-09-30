@@ -122,6 +122,8 @@ export interface Job {
   progress_pages: number
   progress_posts: number
   posts_saved: number
+  /** 任务配置的最大翻页数（来自 task.max_pages）。用于前端算进度百分比。 */
+  max_pages?: number | null
   error?: string | null
   log: any[]
   started_at?: string | null
@@ -279,6 +281,9 @@ export const postsApi = {
         affected: { post_id: number; title: string; site_id: number; matched_keywords: string[] }[]
         unmatched_count: number
         total_titles: number
+        /** 候选帖子全集 (single/multi 模式 = 同站点前 100 条; site 模式 = 同站点前 200 条).
+         *  用于前端用户手动加关键词后, 从全集重算 affected, 避免被后端初始过滤结果限制. */
+        pool?: { post_id: number; title: string; site_id: number; matched_keywords: string[] }[]
       }>('/api/posts/curate/preview', payload)
       .then((r) => r.data),
 
