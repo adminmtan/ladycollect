@@ -247,7 +247,6 @@ const ruleId = ref<number>(0)
 const ruleName = ref('')
 const extractor = ref<'ai' | 'local'>('local')
 const mode = ref<'site' | 'single' | 'multi' | 'global'>('site')  // 后端告知的场景
-const readOnly = ref(false)  // global 模式: 只读聚合, 不能 commit
 // 后端返回的原始命中帖子（title + site_id 都在这里，matched_keywords 留空，
 // 前端按当前 workingKeywords 实时重算）
 type RawPost = { post_id: number; title: string; site_id: number }
@@ -337,15 +336,6 @@ const affected = computed(() => {
 
 // 当前命中的关键词集合（出现在 affected.matched_keywords 里）
 const affectedKeywords = computed(() => {
-  const s = new Set<string>()
-  for (const a of affected.value) {
-    for (const k of a.matched_keywords) s.add(k.toLowerCase())
-  }
-  return s
-})
-
-// workingKeywords 中真正命中了至少一篇帖子的关键词集合
-const effectiveKeywords = computed(() => {
   const s = new Set<string>()
   for (const a of affected.value) {
     for (const k of a.matched_keywords) s.add(k.toLowerCase())
@@ -464,9 +454,14 @@ function onAddKw() {
   if (!raw) return
   // 支持逗号/空格分隔多个
   const parts = raw.split(/[\n,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
+  // 大小写不敏感去重：避免 "Ads" 和 "ads" 同时出现在工作集里
+  // （后端 curate_commit 也是按 .lower() 比较 previous_existing，详见 backend/app/api/posts.py:890）
+  const existingLower = new Set(workingKeywords.value.map((k) => k.trim().toLowerCase()))
   for (const p of parts) {
-    if (!workingKeywords.value.includes(p)) {
+    const key = p.toLowerCase()
+    if (!existingLower.has(key)) {
       workingKeywords.value.push(p)
+      existingLower.add(key)
     }
   }
   newKw.value = ''
