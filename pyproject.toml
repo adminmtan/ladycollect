@@ -20,6 +20,10 @@ dependencies = [
     "websockets>=13.0",
     "bcrypt>=4.2.0",
     "PyJWT>=2.9.0",
+    # cloakbrowser 运行时通过 import playwright 触发 CF 自动通过；
+    # cloakbrowser 自身在 Dockerfile 用 --no-deps 装（resolver 冲突，见 46ab4db），
+    # 但 playwright 必须显式声明，否则 Docker 镜像里 cloakbrowser 一调用就 No module。
+    "playwright>=1.40.0",
 ]
 
 [project.optional-dependencies]

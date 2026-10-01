@@ -72,10 +72,15 @@ ENV APP_VERSION=${APP_VERSION} \
     BUILT_AT=${BUILT_AT}
 # 主体依赖；cloakbrowser 用 --no-deps 单独装（依赖图冲突 + resolver 触发 maturin 构建失败）
 # 详见 commit e205047 / 46ab4db。
+# 关键：cloakbrowser --no-deps 会跳过 playwright 依赖安装，但 cloakbrowser 运行时
+# 必须 import playwright，所以必须先在主依赖里显式装 playwright。
+# 本地 venv 能跑是因为手动 `pip install playwright` 过，Dockerfile 这里补上。
 # 把 stdout/stderr 落到文件再 tail，避免 buildx 把完整 stderr 截断。
 # set -o pipefail + exit $rc 让 BUILD 失败时 exit != 0。
 RUN set -o pipefail ; \
-    pip install --no-cache-dir --break-system-packages -e . > /tmp/pip.out 2> /tmp/pip.err ; \
+    pip install --no-cache-dir --break-system-packages -e . \
+        playwright \
+        > /tmp/pip.out 2> /tmp/pip.err ; \
     rc=$? ; \
     echo "==== main deps pip install exit=$rc ====" ; \
     tail -n 50 /tmp/pip.err ; \
@@ -90,6 +95,9 @@ RUN set -o pipefail ; \
     tail -n 50 /tmp/cloak.err ; \
     rm -rf /root/.cache /tmp/*.whl /tmp/cloak.out /tmp/cloak.err ; \
     exit $rc
+
+# 验证关键依赖都已安装（构建期断言，不通过会让镜像构建失败）
+RUN python3 -c "import playwright, cloakbrowser; print('playwright OK'); print('cloakbrowser OK')"
 
 # 前端产物（来自 stage 1）拷到 backend 的 static 目录，让 FastAPI 直接挂载。
 COPY --from=frontend-build /build/frontend/dist ./frontend-dist
