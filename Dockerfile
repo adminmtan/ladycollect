@@ -101,17 +101,19 @@ RUN set -o pipefail ; \
 # 通过 cryptography.x509 验 TLS 证书），所以"import playwright"不足以暴露 cryptography 缺失。
 # 必须显式 import cryptography 才能在 build 期抓到 No module named 'cryptography' 这种
 # 只在运行时才会触发的 import 链断裂。
-# 注意：必须用 <<'EOF' heredoc 形式写多行 Python；Dockerfile 1.7+ 的 BuildKit 会把字符串
-# 字面量内的换行符当成新指令解析（直接写 python3 -c "..." 多行会被解析为 "import ..."
-# 这种伪指令而 build 失败）。
-RUN <<'PYEOF'
-import cryptography, httpx, playwright, cloakbrowser
-from importlib.metadata import version
-print('deps OK: cryptography', version('cryptography'),
-      '| httpx', version('httpx'),
-      '| playwright', version('playwright'),
-      '| cloakbrowser', version('cloakbrowser'))
-PYEOF
+# 实现说明：直接用 python3 -c "..." 内嵌多行字符串会被 BuildKit 解析报错（把字面量内换行
+# 当成新指令），用 <<'PYEOF' heredoc 又依赖 frontend 1.4+；最稳的写法是用 printf 把多行
+# Python 写到 /tmp/verify_deps.py，再让 python3 执行该文件。
+RUN printf '%s\n' \
+    'import cryptography, httpx, playwright, cloakbrowser' \
+    'from importlib.metadata import version' \
+    'print("deps OK: cryptography", version("cryptography"),' \
+    '      "| httpx", version("httpx"),' \
+    '      "| playwright", version("playwright"),' \
+    '      "| cloakbrowser", version("cloakbrowser"))' \
+    > /tmp/verify_deps.py && \
+    python3 /tmp/verify_deps.py && \
+    rm /tmp/verify_deps.py
 
 # 前端产物（来自 stage 1）拷到 backend 的 static 目录，让 FastAPI 直接挂载。
 COPY --from=frontend-build /build/frontend/dist ./frontend-dist
