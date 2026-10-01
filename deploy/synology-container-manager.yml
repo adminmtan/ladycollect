@@ -17,7 +17,9 @@ services:
     container_name: ladycollect
     restart: unless-stopped
     ports:
-      - "5080:8000"
+      # 容器内 uvicorn 监听 8080（见 Dockerfile CMD），所以右边必须是 8080
+      # 旧版此处写成 8000，导致群晖上端口转发到无服务端口
+      - "5080:8080"
     volumes:
       # 用绝对路径，bind mount 数据到 NAS 物理目录
       - /volume1/docker/apps/ladycollect/data:/data

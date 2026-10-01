@@ -8,8 +8,9 @@ services:
     # 不要用 labels 字段 —— 群晖 Container Manager 拒绝非白名单字段。
     # 想自动更新在 NAS 上单跑 watchtower（看 deploy/nas-watchtower.yml）
     ports:
-      # NAS 上把 8088 暴露给局域网访问；按需改
-      - "8088:8000"
+      # NAS 上把 8088 暴露给局域网访问；按需改。
+      # 容器内 uvicorn 监听 8080（见 Dockerfile CMD 与 backend/app/config.py），所以右边必须是 8080
+      - "${APP_PORT:-8088}:8080"
     volumes:
       # SQLite + 上传文件 + profile_cloak 都挂载到 /data
       # 用 bind mount 而不是 named volume —— 备份/迁移直接拷目录就行
@@ -24,7 +25,7 @@ services:
       # 让容器内的 SQLite / 上传走持久化目录
       - DATA_DIR=/data
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
