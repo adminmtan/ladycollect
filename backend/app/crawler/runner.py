@@ -16,8 +16,10 @@ import logging
 import re
 import threading
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 import httpx
 from sqlmodel import Session, select
@@ -82,6 +84,132 @@ def request_cancel_job(job_id: int) -> bool:
 
 class JobCancelled(Exception):
     """用户主动取消时抛出"""
+
+
+# ============ 采集规格（spec）级重试器 ============
+# 设计目标：单页加载偶发失败（timeout / connection reset / browser pool 瞬时占满）
+# 不应直接 continue 跳页漏数据；应分级重试后再决定。
+#
+# 关键约定：
+# - 调用方传入一个零参 callable（通常是 page.get + 后续解析的闭包），返回任何值即视为成功
+# - 仅 retryable_exceptions 白名单内的异常重试；其它异常（如 4xx HTTPError / 解析失败）
+#   立即抛，由外层 except 接住后 continue 跳页
+# - 任何 attempt 之前检查 cancel_ev.is_set()；触发则抛 JobCancelled 让调度器中断 Job
+# - total_timeout_s 整体上限 + sleeps 退避序列；到上限抛最后一次异常（外层可 continue）
+# - 不引入 tenacity 等新依赖；自管 30 行
+
+
+class NonRetryableError(Exception):
+    """caller 把某种异常升格为「永久失败，不重试」（如 HTTP 4xx）"""
+
+
+# 白名单：网络瞬时错误 + Playwright/DrissionPage 常见瞬时错误
+# 注意：尽量窄，避免 catch-all 重试掩盖真 bug
+SPEC_RETRYABLE_EXCEPTIONS: tuple = (
+    TimeoutError,        # Python 内置；socket timeout / asyncio timeout
+    ConnectionError,     # DNS / refused / reset
+    OSError,             # 低层 socket 错误（macOS 上 ETIMEDOUT 也走 OSError）
+)
+
+
+@dataclass
+class _RetryResult:
+    """spec_with_retry 上下文返回值。caller 通过 .run(callable) 调用被重试的函数"""
+
+    _ctx: "_RetryCtx"
+
+    def run(self, fn) -> object:
+        """跑一次带重试的调用。返回 fn 的返回值；最后一次异常会重抛出。"""
+        return self._ctx._execute_with_retry(fn)
+
+
+@dataclass
+class _RetryCtx:
+    spec_name: str
+    cancel_ev: threading.Event
+    retryable_exceptions: tuple
+    sleeps: tuple
+    total_timeout_s: float
+    on_retry: Optional[callable] = None  # (attempt, exc, wait_s) -> None; 用于记日志
+
+    def _check_cancel(self) -> None:
+        if self.cancel_ev is not None and self.cancel_ev.is_set():
+            raise JobCancelled(f"cancel received during {self.spec_name}")
+
+    def _execute_with_retry(self, fn) -> object:
+        start = time.monotonic()
+        last_exc: Optional[BaseException] = None
+        max_attempts = max(len(self.sleeps), 1)
+        for attempt in range(1, max_attempts + 1):
+            self._check_cancel()
+            # total_timeout 守门：留出 0.5s 给下一次 attempt + sleep
+            if time.monotonic() - start > self.total_timeout_s:
+                if last_exc is not None:
+                    raise last_exc
+                raise TimeoutError(
+                    f"{self.spec_name} total_timeout={self.total_timeout_s}s exceeded "
+                    f"before attempt {attempt}"
+                )
+            try:
+                return fn()
+            except JobCancelled:
+                raise  # 始终向上传递
+            except self.retryable_exceptions as e:
+                last_exc = e
+                if attempt >= max_attempts:
+                    raise  # 用尽
+                wait_s = self.sleeps[attempt - 1] if attempt - 1 < len(self.sleeps) else 0
+                if self.on_retry:
+                    try:
+                        self.on_retry(attempt, e, wait_s)
+                    except Exception:  # pragma: no cover
+                        pass
+                if wait_s > 0:
+                    time.sleep(wait_s)
+                continue
+            except NonRetryableError:
+                raise  # 永久失败，立刻抛
+        # 不应到达这里
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(f"{self.spec_name} retry loop exited unexpectedly")
+
+
+@contextmanager
+def spec_with_retry(
+    spec_name: str,
+    cancel_ev: threading.Event,
+    *,
+    retryable_exceptions: tuple = SPEC_RETRYABLE_EXCEPTIONS,
+    sleeps: tuple = (5, 15),
+    total_timeout_s: float = 60.0,
+    on_retry: Optional[callable] = None,
+) -> Iterator[_RetryResult]:
+    """采集单页 spec 重试上下文。
+
+    用法：
+        with spec_with_retry(
+            spec_name=f"[{site.host}][p{spec.page}] 列表页",
+            cancel_ev=cancel_ev,
+            on_retry=lambda a, e, w: _log_progress(job_id, f"retry {a}/2: {e}"),
+        ) as r:
+            r.run(lambda: _do_load(spec.url))
+
+    语义：
+    - 重试次数 = max(len(sleeps), 1)（即 sleeps=(5,15) → 3 次 attempt，第 1 次立刻、
+      第 2 次 sleep 5s、第 3 次 sleep 15s）
+    - 仅 retryable_exceptions 白名单内的异常触发重试
+    - cancel_ev 触发或 total_timeout_s 触发 → 抛（JobCancelled / 最后一次异常）
+    """
+    ctx = _RetryCtx(
+        spec_name=spec_name,
+        cancel_ev=cancel_ev,
+        retryable_exceptions=retryable_exceptions,
+        sleeps=sleeps,
+        total_timeout_s=total_timeout_s,
+        on_retry=on_retry,
+    )
+    yield _RetryResult(_ctx=ctx)
 
 
 # 共享 httpx 客户端（线程级单例，连接复用）
@@ -612,6 +740,21 @@ def _detect_cf_challenge(html: str) -> bool:
     return any(m in head for m in _CF_MARKERS)
 
 
+def _reload_list_page(page, url: str, nav_timeout_s: int) -> None:
+    """spec 级重试器用：单次 page.get + age gate 重新加载。
+
+    DrissionPage 的 page.get() 自带内部 retry=3 (CF challenge 重试)，
+    这里只负责外部那一层；age gate 处理也复跑一次，确保列表特征出现。
+    """
+    page.get(url, timeout=nav_timeout_s)
+    if _has_age_gate(page):
+        btn = page.raw.locator("a.enter-btn").first
+        if btn.count() > 0:
+            btn.click()
+            time.sleep(2)
+            page.get(url, timeout=nav_timeout_s)
+
+
 def _cf_warmup_retry(page, job, session, job_id: int, site_host: str, page_num: int, url: str) -> bool:
     """CF challenge 时尝试等更久 + 重新 GET。
 
@@ -1040,6 +1183,49 @@ def _crawl_with_browser(
                             level=logging.WARNING,
                         )
                         continue
+            except SPEC_RETRYABLE_EXCEPTIONS as e:
+                # 瞬时错误（timeout / connection reset / DNS 抖动）→ 分级重试 1 次
+                # 不要无限重试，规格级 total_timeout 60s 兜底；最终失败再 continue 跳页
+                _log_progress(
+                    job_id,
+                    f"[{site.host}][p{spec.page}] 列表页加载瞬时失败: {e}，尝试 spec 级重试",
+                    level=logging.WARNING,
+                )
+                retry_ok = False
+                try:
+                    with spec_with_retry(
+                        spec_name=f"[{site.host}][p{spec.page}] 列表页",
+                        cancel_ev=cancel_ev,
+                        sleeps=(5, 15),
+                        total_timeout_s=60,
+                        on_retry=lambda a, exc, w: _log_progress(
+                            job_id,
+                            f"[{site.host}][p{spec.page}] 列表页第 {a} 次重试 (wait={w}s): {exc}",
+                            level=logging.WARNING,
+                        ),
+                    ) as r:
+                        r.run(lambda: _reload_list_page(page, spec.url, nav_timeout_s))
+                        ok2 = page.wait_loaded('a[href*="thread-"]', timeout=nav_timeout_s)
+                        if ok2:
+                            retry_ok = True
+                except JobCancelled:
+                    raise
+                except SPEC_RETRYABLE_EXCEPTIONS as e2:
+                    _append_log(job, f"列表页重试用尽 {spec.url}: {e2}", session)
+                    _log_progress(
+                        job_id,
+                        f"[{site.host}][p{spec.page}] 列表页重试用尽: {e2}",
+                        level=logging.WARNING,
+                    )
+                except Exception as e2:
+                    _append_log(job, f"列表页重试异常 {spec.url}: {e2}", session)
+                    _log_progress(
+                        job_id,
+                        f"[{site.host}][p{spec.page}] 列表页重试异常: {e2}",
+                        level=logging.WARNING,
+                    )
+                if not retry_ok:
+                    continue
             except Exception as e:
                 _append_log(job, f"列表页加载失败 {spec.url}: {e}", session)
                 _log_progress(
