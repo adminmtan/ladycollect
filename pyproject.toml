@@ -20,9 +20,17 @@ dependencies = [
     "websockets>=13.0",
     "bcrypt>=4.2.0",
     "PyJWT>=2.9.0",
-    # cloakbrowser 运行时通过 import playwright 触发 CF 自动通过；
-    # cloakbrowser 自身在 Dockerfile 用 --no-deps 装（resolver 冲突，见 46ab4db），
-    # 但 playwright 必须显式声明，否则 Docker 镜像里 cloakbrowser 一调用就 No module。
+    # cloakbrowser 直接依赖 cryptography + httpx + playwright（pip show cloakbrowser）；
+    # Dockerfile 用 --no-deps 装 cloakbrowser（resolver 冲突，见 46ab4db），
+    # 所以这三个必须显式声明在主依赖里：
+    # - playwright: cloakbrowser 启动浏览器时 lazy import，缺了 No module named 'playwright'
+    # - cryptography: Playwright 启动 Browser 时 lazy import cryptography.x509 (TLS 证书)
+    #                缺了 No module named 'cryptography'（生产环境 sehuatang 任务 fail，
+    #                见 2026-10-01T09:12 job#7 日志）
+    # - httpx: cloakbrowser 网络层依赖
+    # 本地 venv 之前一直能跑是因为 playwright 拖带了 cryptography，pyproject 没声明 + Docker
+    # 全新构建导致镜像里 cryptography 完全缺失。
+    "cryptography>=41.0.0",
     "playwright>=1.40.0",
 ]
 
