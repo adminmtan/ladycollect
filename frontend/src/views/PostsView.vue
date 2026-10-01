@@ -453,8 +453,10 @@ const loadingAll = ref(false)
 async function loadAll() {
   loadingAll.value = true
   try {
-    await fetchPosts() // 先重置回第 1 页
-    // 然后逐页拉取直到装满 store.total
+    await fetchPosts() // 先重置回第 1 页（store.fetch() 会 bump generation）
+    // 逐页拉取直到装满 store.total；如果用户在循环期间切换筛选条件，
+    // store.fetch() 会再次 bump generation 并重置 items，循环会因 generation
+    // mismatch 在 store.loadMore 内被静默丢弃，然后 while 条件自然失败退出
     while (store.items.length < store.total && !store.loading) {
       await store.loadMore()
     }

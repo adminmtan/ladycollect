@@ -27,27 +27,39 @@ export const usePostStore = defineStore('posts', () => {
   const loading = ref(false)
   const query = ref<PostQuery>({ page: 1, page_size: 24, sort: 'created_desc' })
 
+  // 请求代际计数器：每次 fetch() 入口自增，loadMore() / fetch() 内部 await 后
+  // 比较捕获的 token 是否仍是最新，避免旧请求的响应覆盖新请求的状态（orders 反
+  // 序覆盖乱序）。典型场景：用户在 loadAll 进行中切换筛选条件，或 lAll 循环
+  // 里某一页响应超时后新 fetch 已经重置 items。
+  let generation = 0
+
   async function fetch(q: PostQuery = {}) {
+    const myGen = ++generation
     loading.value = true
     try {
       query.value = { page: 1, page_size: 24, ...q }
       const data: PostPage = await postsApi.list(query.value)
+      // 丢弃旧请求的响应（用户已在更晚一次 fetch 中重置了列表）
+      if (myGen !== generation) return
       items.value = data.items
       total.value = data.total
     } finally {
-      loading.value = false
+      if (myGen === generation) loading.value = false
     }
   }
 
   async function loadMore() {
+    const myGen = generation
     loading.value = true
     try {
       query.value.page = (query.value.page || 1) + 1
       const data = await postsApi.list(query.value)
+      // 丢弃旧请求的响应（重置后 page 已经被重置为 1，旧的 page=N+1 响应没意义）
+      if (myGen !== generation) return
       items.value = items.value.concat(data.items)
       total.value = data.total
     } finally {
-      loading.value = false
+      if (myGen === generation) loading.value = false
     }
   }
 
