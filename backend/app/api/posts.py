@@ -842,7 +842,12 @@ def curate_commit(payload: CurateCommitRequest, session: Session = Depends(get_s
     previous_set = {k.strip().lower() for k in (payload.previous_existing or []) if k and k.strip()}
     final_set = {k.strip().lower() for k in (payload.keywords or []) if k and k.strip()}
     to_add = sorted(final_set - previous_set)
-    to_remove = sorted(previous_set - final_set)
+    # ★ dislike 语义：用户没机会编辑历史词，强制只追加、不删历史词
+    # （避免 "+1 −1" 反复替换 bug，见 2026-10-02 测试 test_curate_commit_dislike.py）
+    if (payload.note or "").lower() == "dislike":
+        to_remove = []
+    else:
+        to_remove = sorted(previous_set - final_set)
 
     # 2) 新增关键词入库
     added = _persist_keywords(

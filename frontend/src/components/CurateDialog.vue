@@ -503,12 +503,18 @@ async function onCommit() {
   }
   committing.value = true
   try {
+    // ★ dislike 走的是「追加」语义（workingKeywords 只含 AI 给的新词，用户没机会
+    // 编辑历史词），previous_existing 传空数组避免误删历史词；site/multi 是「编辑」
+    // 语义，previous_existing 用现有词全集做 diff。note 字段也传给后端，让后端
+    // 在 user_feedback 里能区分两种语义。
+    const previousExisting = mode.value === 'single' ? [] : existingKeywords.value
+    const note = mode.value === 'single' ? 'dislike' : 'curate'
     const res = await postsApi.curateCommit({
       rule_id: ruleId.value,
       keywords: workingKeywords.value,
-      previous_existing: existingKeywords.value,
+      previous_existing: previousExisting,
       post_ids_to_delete: Array.from(selectedDelete.value),
-      note: 'curate',
+      note,
     })
     const summary = [
       res.keywords_added.length ? `+${res.keywords_added.length} 关键词` : '',
